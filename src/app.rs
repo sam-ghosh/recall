@@ -61,6 +61,23 @@ pub enum SearchScope {
     Project(String),
 }
 
+/// Whether keys are commands or go into the search box (like nvim's normal
+/// and insert modes)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    /// Letters are commands: j/k move, g/G first/last, / starts a search
+    Normal,
+    /// Letters are typed into the search box, until Enter or Esc
+    Search,
+}
+
+/// Which side of the session list screen receives movement keys
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    List,
+    Preview,
+}
+
 pub struct App {
     /// Current search query
     pub query: String,
@@ -90,6 +107,12 @@ pub struct App {
     pub pending_auto_scroll: bool,
     /// Whether preview has more content than visible (for scroll hint)
     pub preview_scrollable: bool,
+    /// Whether keys are commands or search text
+    pub input_mode: InputMode,
+    /// Pane that movement keys act on (switched with Tab or Ctrl+W w)
+    pub focused_pane: Pane,
+    /// Ctrl+W was pressed and the next key picks a pane
+    pending_window_key: bool,
     /// Whether the keyboard shortcuts panel is open
     pub show_help: bool,
     /// Lines the shortcuts panel is scrolled down by
@@ -178,6 +201,9 @@ impl App {
             preview_area: (0, 0, 0, 0),
             pending_auto_scroll: false,
             preview_scrollable: false,
+            input_mode: InputMode::Normal,
+            focused_pane: Pane::List,
+            pending_window_key: false,
             show_help: false,
             help_scroll: 0,
             transcript: None,
@@ -378,7 +404,9 @@ impl App {
         Some(session)
     }
 
-    /// Open the selected conversation full screen, at the matched message when searching
+    /// Open the selected conversation full screen: at the message focused in
+    /// the preview when the preview has focus, at the matched message when
+    /// searching, otherwise at the top
     pub fn open_transcript(&mut self) {
         let Some(result) = self.results.get(self.selected) else {
             return;
@@ -386,11 +414,13 @@ impl App {
         let path = result.session.file_path.clone();
         let matched = result.matched_message_index;
         let words = self.search_words();
+        let open_at = if self.focused_pane == Pane::Preview {
+            Some(self.focused_message.unwrap_or(matched))
+        } else {
+            (!words.is_empty()).then_some(matched)
+        };
         match self.load_session(&path) {
-            Some(session) => {
-                let open_at = (!words.is_empty()).then_some(matched);
-                self.transcript = Some(Transcript::new(session, words, open_at));
-            }
+            Some(session) => self.transcript = Some(Transcript::new(session, words, open_at)),
             None => self.set_flash("Could not read this session file"),
         }
     }
@@ -483,7 +513,6 @@ impl App {
     /// Handle a key press. The shortcuts panel (`ui::SHORTCUTS`) lists these.
     pub fn on_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
         if ctrl && key.code == KeyCode::Char('c') {
             self.should_quit = true;
@@ -511,35 +540,164 @@ impl App {
             return;
         }
 
+        // Keys that do the same in every mode and pane
         match key.code {
-            KeyCode::F(1) => self.open_help(),
-            // With text in the search box, '?' is typed as part of the search
-            KeyCode::Char('?') if self.query.is_empty() => self.open_help(),
-            KeyCode::Esc => self.on_escape(),
-            KeyCode::Enter => self.open_transcript(),
-            KeyCode::Char('r') if ctrl => self.on_resume(),
-            KeyCode::Tab => self.copy_session_id(),
-            KeyCode::Char('y') if ctrl => self.copy_resume_command(),
-            KeyCode::Char('s') if ctrl => self.cycle_source_filter(),
-            KeyCode::Char('d') if ctrl => self.on_half_page_down(),
-            KeyCode::Char('u') if ctrl => self.on_half_page_up(),
+            KeyCode::F(1) => return self.open_help(),
+            KeyCode::Char('r') if ctrl => return self.on_resume(),
+            KeyCode::Char('y') if ctrl => return self.copy_resume_command(),
+            KeyCode::Char('s') if ctrl => return self.cycle_source_filter(),
+            _ => {}
+        }
+
+        match self.input_mode {
+            InputMode::Search => self.on_search_key(key),
+            InputMode::Normal => self.on_normal_key(key),
+        }
+    }
+
+    /// Search mode: keys edit the search box; arrows still move the selection
+    fn on_search_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => self.input_mode = InputMode::Normal,
             KeyCode::Char('a') if ctrl => self.on_home(),
-            KeyCode::Char('e') if ctrl => self.toggle_focused_expansion(),
-            KeyCode::Up if shift => self.focus_prev_message(),
-            KeyCode::Down if shift => self.focus_next_message(),
+            KeyCode::Char('e') if ctrl => self.on_end(),
+            KeyCode::Char('u') if ctrl => self.delete_to_start(),
+            KeyCode::Char('w') if ctrl => self.delete_previous_word(),
+            KeyCode::Char('n') if ctrl => self.on_down(),
+            KeyCode::Char('p') if ctrl => self.on_up(),
             KeyCode::Up => self.on_up(),
             KeyCode::Down => self.on_down(),
             KeyCode::Left => self.on_left(),
             KeyCode::Right => self.on_right(),
-            KeyCode::Home => self.select_first(),
-            KeyCode::End => self.select_last(),
-            KeyCode::PageUp => self.on_page_up(),
-            KeyCode::PageDown => self.on_page_down(),
+            KeyCode::Home => self.on_home(),
+            KeyCode::End => self.on_end(),
             KeyCode::Delete => self.on_delete(),
             KeyCode::Backspace => self.on_backspace(),
-            KeyCode::Char('/') => self.toggle_scope(),
-            KeyCode::Char(c) => self.on_char(c),
+            KeyCode::Char(c) if !ctrl => self.on_char(c),
             _ => {}
+        }
+    }
+
+    /// Normal mode: letters are commands, acting on the focused pane
+    fn on_normal_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        if self.pending_window_key {
+            self.pending_window_key = false;
+            match key.code {
+                KeyCode::Char('w') | KeyCode::Char('p') => self.switch_pane(),
+                KeyCode::Char('l') | KeyCode::Right => self.focused_pane = Pane::Preview,
+                KeyCode::Char('h') | KeyCode::Left => self.focused_pane = Pane::List,
+                _ => {}
+            }
+            return;
+        }
+
+        // Keys that do the same in both panes
+        match key.code {
+            KeyCode::Char('w') if ctrl => return self.pending_window_key = true,
+            KeyCode::Tab | KeyCode::BackTab => return self.switch_pane(),
+            KeyCode::Char('?') => return self.open_help(),
+            KeyCode::Char('q') => return self.should_quit = true,
+            KeyCode::Char('/') | KeyCode::Char('i') | KeyCode::Char('a') if !ctrl => {
+                self.focused_pane = Pane::List;
+                self.input_mode = InputMode::Search;
+                self.on_end();
+                return;
+            }
+            KeyCode::Enter => return self.open_transcript(),
+            KeyCode::Char('s') if !ctrl => return self.toggle_scope(),
+            KeyCode::Char('t') => return self.cycle_source_filter(),
+            KeyCode::Char('y') if !ctrl => return self.copy_session_id(),
+            KeyCode::Char('Y') => return self.copy_resume_command(),
+            KeyCode::Up if shift => return self.focus_prev_message(),
+            KeyCode::Down if shift => return self.focus_next_message(),
+            _ => {}
+        }
+
+        match self.focused_pane {
+            Pane::List => match key.code {
+                KeyCode::Esc => self.on_escape(),
+                KeyCode::Char('j') | KeyCode::Down => self.on_down(),
+                KeyCode::Char('k') | KeyCode::Up => self.on_up(),
+                KeyCode::Char('g') | KeyCode::Home => self.select_first(),
+                KeyCode::Char('G') | KeyCode::End => self.select_last(),
+                KeyCode::Char('d') if ctrl => self.on_half_page_down(),
+                KeyCode::Char('u') if ctrl => self.on_half_page_up(),
+                KeyCode::Char('f') if ctrl => self.on_page_down(),
+                KeyCode::Char('b') if ctrl => self.on_page_up(),
+                KeyCode::PageDown => self.on_page_down(),
+                KeyCode::PageUp => self.on_page_up(),
+                KeyCode::Char('e') if ctrl => self.toggle_focused_expansion(),
+                KeyCode::Char(']') | KeyCode::Char('J') => self.focus_next_message(),
+                KeyCode::Char('[') | KeyCode::Char('K') => self.focus_prev_message(),
+                _ => {}
+            },
+            Pane::Preview => {
+                let height = (self.preview_area.3 as usize).max(1);
+                match key.code {
+                    KeyCode::Esc => self.focused_pane = Pane::List,
+                    KeyCode::Char('j') | KeyCode::Down => self.scroll_preview_down(1),
+                    KeyCode::Char('k') | KeyCode::Up => self.scroll_preview_up(1),
+                    KeyCode::Char('d') if ctrl => self.scroll_preview_down(height / 2),
+                    KeyCode::Char('u') if ctrl => self.scroll_preview_up(height / 2),
+                    KeyCode::Char('f') if ctrl => self.scroll_preview_down(height.saturating_sub(2)),
+                    KeyCode::Char('b') if ctrl => self.scroll_preview_up(height.saturating_sub(2)),
+                    KeyCode::PageDown => self.scroll_preview_down(height.saturating_sub(2)),
+                    KeyCode::PageUp => self.scroll_preview_up(height.saturating_sub(2)),
+                    KeyCode::Char('g') | KeyCode::Home => self.focus_message(0),
+                    KeyCode::Char('G') | KeyCode::End => {
+                        self.focus_message(self.preview_message_count.saturating_sub(1))
+                    }
+                    KeyCode::Char(']') | KeyCode::Char('J') => self.focus_next_message(),
+                    KeyCode::Char('[') | KeyCode::Char('K') => self.focus_prev_message(),
+                    KeyCode::Char('e') if ctrl => self.toggle_focused_expansion(),
+                    KeyCode::Char('o') => self.toggle_focused_expansion(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Move focus between the session list and the preview
+    pub fn switch_pane(&mut self) {
+        self.focused_pane = match self.focused_pane {
+            Pane::List if !self.results.is_empty() => Pane::Preview,
+            _ => Pane::List,
+        };
+    }
+
+    /// Focus a message in the preview and scroll to it
+    pub fn focus_message(&mut self, index: usize) {
+        if self.preview_message_count == 0 {
+            return;
+        }
+        self.focused_message = Some(index.min(self.preview_message_count - 1));
+        self.pending_auto_scroll = true;
+    }
+
+    /// Delete the search text before the cursor (Ctrl+U)
+    fn delete_to_start(&mut self) {
+        let byte_pos = self.cursor_byte_pos();
+        if byte_pos > 0 {
+            self.query.replace_range(..byte_pos, "");
+            self.cursor = 0;
+            self.mark_search_pending();
+        }
+    }
+
+    /// Delete the word before the cursor (Ctrl+W)
+    fn delete_previous_word(&mut self) {
+        let byte_pos = self.cursor_byte_pos();
+        let before = &self.query[..byte_pos];
+        let word_start = before.trim_end().rfind(' ').map(|i| i + 1).unwrap_or(0);
+        if word_start < byte_pos {
+            let removed = self.query[word_start..byte_pos].chars().count();
+            self.query.replace_range(word_start..byte_pos, "");
+            self.cursor -= removed;
+            self.mark_search_pending();
         }
     }
 
@@ -907,6 +1065,9 @@ mod tests {
             preview_area: (0, 0, 0, 0),
             pending_auto_scroll: false,
             preview_scrollable: false,
+            input_mode: InputMode::Normal,
+            focused_pane: Pane::List,
+            pending_window_key: false,
             show_help: false,
             help_scroll: 0,
             transcript: None,
@@ -1245,9 +1406,10 @@ mod tests {
     }
 
     #[test]
-    fn test_question_mark_is_typed_when_search_has_text() {
+    fn test_question_mark_is_typed_in_search_mode() {
         let mut app = test_app();
-        app.on_char('a');
+        press(&mut app, KeyCode::Char('/'));
+        press(&mut app, KeyCode::Char('a'));
 
         press(&mut app, KeyCode::Char('?'));
 
@@ -1351,11 +1513,11 @@ mod tests {
     }
 
     #[test]
-    fn test_tab_and_ctrl_y_copy_without_quitting() {
+    fn test_y_and_ctrl_y_copy_without_quitting() {
         let mut app = app_with_results(3);
         app.results[0].session.cwd = "/p/xenia".to_string();
 
-        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('y'));
         assert_eq!(app.pending_copy, Some(("s0".to_string(), "session ID")));
         assert!(!app.should_quit);
 
@@ -1417,6 +1579,140 @@ mod tests {
         std::fs::write(&path, text).unwrap();
 
         assert_eq!(app.load_session(&path).unwrap().messages.len(), 3);
+    }
+
+    // ==================== normal and search modes, panes ====================
+
+    #[test]
+    fn test_starts_in_normal_mode_where_letters_are_commands() {
+        let mut app = app_with_results(25);
+
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.selected, 2);
+        press(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.selected, 24);
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.selected, 0);
+        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        assert_eq!(app.selected, 5);
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn test_slash_types_a_search_until_enter_or_esc() {
+        let mut app = app_with_results(5);
+
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.input_mode, InputMode::Search);
+        for c in "jgq".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.query, "jgq");
+        assert!(!app.should_quit);
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.transcript.is_none(), "Enter ends the search, doesn't open");
+        assert_eq!(app.query, "jgq");
+
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.query, "jgq");
+    }
+
+    #[test]
+    fn test_search_mode_editing_keys() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('/'));
+        for c in "deploy the app".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(app.query, "deploy the ");
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn test_normal_mode_command_keys() {
+        let mut app = app_with_results(3);
+
+        press(&mut app, KeyCode::Char('Y'));
+        assert_eq!(app.pending_copy.as_ref().map(|c| c.1), Some("resume command"));
+        // s and t search again (the test index is empty)
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.search_scope, SearchScope::Project(String::new()));
+        press(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.source_filter, Some(SessionSource::ClaudeCode));
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.show_help);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_tab_and_ctrl_w_switch_panes() {
+        let mut app = app_with_results(3);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focused_pane, Pane::Preview);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.focused_pane, Pane::List);
+
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(app.focused_pane, Pane::Preview);
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.focused_pane, Pane::List);
+
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.focused_pane, Pane::List, "Esc returns to the list");
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn test_preview_pane_keys_move_through_messages() {
+        let mut app = app_with_results(3);
+        app.preview_message_count = 10;
+        press(&mut app, KeyCode::Tab);
+
+        press(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.focused_message, Some(9));
+        press(&mut app, KeyCode::Char('['));
+        assert_eq!(app.focused_message, Some(8));
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.focused_message, Some(0));
+        press(&mut app, KeyCode::Char(']'));
+        assert_eq!(app.focused_message, Some(1));
+        assert_eq!(app.selected, 0, "session selection doesn't move");
+
+        app.preview_scroll = 5;
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.preview_scroll, 4);
+    }
+
+    #[test]
+    fn test_enter_in_preview_opens_transcript_at_focused_message() {
+        let (mut app, _dir) = app_with_session_file();
+        app.preview_message_count = 2;
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Char('G'));
+
+        press(&mut app, KeyCode::Enter);
+
+        let transcript = app.transcript.as_mut().expect("transcript open");
+        transcript.height = 1;
+        transcript.set_lines(
+            (0..6).map(|i| ratatui::text::Line::raw(i.to_string())).collect(),
+            vec![0, 3],
+        );
+        assert_eq!(transcript.top, 3);
     }
 
     // ==================== State reset tests ====================

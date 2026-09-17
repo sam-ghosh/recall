@@ -235,6 +235,7 @@ fn run(terminal: &mut tui::Tui, app: &mut App) -> Result<()> {
                         };
 
                         if app.click_preview_message(x, y) {
+                            app.focused_pane = recall::app::Pane::Preview;
                             if is_double_click {
                                 app.toggle_focused_expansion();
                                 last_click = None; // Reset after double-click

@@ -270,7 +270,7 @@ impl Transcript {
             KeyCode::Char('r') if ctrl => return TranscriptAction::Resume,
             KeyCode::Char('y') if ctrl => return TranscriptAction::CopyResumeCommand,
             KeyCode::Char('Y') => return TranscriptAction::CopyResumeCommand,
-            KeyCode::Char('y') | KeyCode::Tab => return TranscriptAction::CopySessionId,
+            KeyCode::Char('y') => return TranscriptAction::CopySessionId,
 
             KeyCode::Char('d') | KeyCode::Char('u') if ctrl => {
                 let down = key.code == KeyCode::Char('d');
@@ -486,7 +486,7 @@ mod tests {
         let mut t = transcript();
         assert_eq!(press(&mut t, KeyCode::Char('q')), TranscriptAction::Close);
         assert_eq!(press(&mut t, KeyCode::Enter), TranscriptAction::Resume);
-        assert_eq!(press(&mut t, KeyCode::Tab), TranscriptAction::CopySessionId);
+        assert_eq!(press(&mut t, KeyCode::Char('y')), TranscriptAction::CopySessionId);
         assert_eq!(press(&mut t, KeyCode::Char('Y')), TranscriptAction::CopyResumeCommand);
         assert_eq!(press_ctrl(&mut t, 'y'), TranscriptAction::CopyResumeCommand);
         assert_eq!(press(&mut t, KeyCode::Char('?')), TranscriptAction::ShowHelp);

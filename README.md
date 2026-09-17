@@ -32,31 +32,51 @@ Run:
 recall
 ```
 
-**That's it.** Start typing to search. Enter opens the conversation, Enter again jumps back in.
+**That's it.** Keys work like nvim: recall opens in normal mode, `/` types a
+search, Enter opens a conversation, Enter again jumps back in. `?` lists every key.
+The bottom row shows the mode and the main keys for where you are.
 
-### Session list
+### Session list (normal mode)
 
 | Key | Action |
 |-----|--------|
-| `↑↓` | Navigate sessions |
-| `Pg↑/↓` | Page through sessions |
-| `Ctrl+U` / `Ctrl+D` | Half a page up/down |
-| `Home` / `End` | First/last session |
-| `Shift+↑↓` | Previous/next message in the preview |
-| `Ctrl+E` | Expand message |
-| `Ctrl+A` | Cursor to start of search |
+| `j` `k` / `↑↓` | Next/previous session |
+| `g` `G` / `Home` `End` | First/last session |
+| `Ctrl+D` `Ctrl+U` / `Ctrl+F` `Ctrl+B` | Half/full page down/up |
 | `Enter` | Open the transcript view |
 | `Ctrl+R` | Resume conversation |
-| `Tab` | Copy session ID |
-| `Ctrl+Y` | Copy resume command (`cd '<folder>' && claude --resume <id>`) |
-| `/` | Toggle scope (project/everywhere) |
-| `Ctrl+S` | Filter by tool: all, Claude, Codex, Factory, OpenCode |
-| `?` / `F1` | Keyboard shortcuts panel (`?` when the search is empty) |
-| `Esc` | Clear search; quit when empty |
+| `/` / `i` | Type a search |
+| `s` | Switch project/everywhere |
+| `t` / `Ctrl+S` | Filter by tool: all, Claude, Codex, Factory, OpenCode |
+| `y` | Copy session ID |
+| `Y` / `Ctrl+Y` | Copy resume command (`cd '<folder>' && claude --resume <id>`) |
+| `Tab` / `Ctrl+W w` | Switch between the list and the preview |
+| `Esc` | Clear search |
+| `q` | Quit |
+
+### Preview (after `Tab`)
+
+| Key | Action |
+|-----|--------|
+| `j` `k` / `Ctrl+D` `Ctrl+U` | Scroll |
+| `g` `G` | First/last message |
+| `]` `[` / `J` `K` | Next/previous message |
+| `o` / `Ctrl+E` | Expand/collapse message |
+| `Enter` | Open the transcript at this message |
+| `Tab` / `Esc` | Back to the list |
+
+### Typing a search (after `/`)
+
+| Key | Action |
+|-----|--------|
+| `Enter` / `Esc` | Done, back to normal mode |
+| `↑↓` | Next/previous session |
+| `Ctrl+W` / `Ctrl+U` | Delete previous word / to start |
+| `Ctrl+A` / `Ctrl+E` | Start/end of search |
 
 ### Transcript view
 
-The whole conversation, full screen, with vim-style keys.
+The whole conversation, full screen.
 
 | Key | Action |
 |-----|--------|
@@ -68,7 +88,7 @@ The whole conversation, full screen, with vim-style keys.
 | `}` `{` | Next/previous message of yours |
 | `/` then `n` `N` | Search in the transcript, next/previous match |
 | `Enter` / `Ctrl+R` | Resume conversation |
-| `y` / `Tab` | Copy session ID |
+| `y` | Copy session ID |
 | `Y` / `Ctrl+Y` | Copy resume command |
 | `q` / `Esc` | Back to the session list |
 

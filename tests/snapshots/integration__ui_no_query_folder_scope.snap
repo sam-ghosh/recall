@@ -4,10 +4,10 @@ assertion_line: 395
 expression: buffer_to_string(&terminal)
 ---
                                                                │
-  Search...                                                    │  /  /test/cwd
+  Press / to search                                            │  s  /test/cwd
                                                                │
 
-  Nothing here. Press  /  to search everywhere.
+  Nothing here. Press  s  to search everywhere.
 
 
 
@@ -26,4 +26,4 @@ expression: buffer_to_string(&terminal)
 
 
 
-  ? keyboard shortcuts                                               2 sessions
+  NORMAL    j/k  move │  Enter  open │  /  search │  ?  help         2 sessions

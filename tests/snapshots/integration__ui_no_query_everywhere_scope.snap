@@ -4,7 +4,7 @@ assertion_line: 419
 expression: buffer_to_string(&terminal)
 ---
                                                               │
-  Search...                                                   │  /  everywhere
+  Press / to search                                           │  s  everywhere
                                                               │
 
 
@@ -26,4 +26,4 @@ expression: buffer_to_string(&terminal)
 
 
 
-  ? keyboard shortcuts                                               0 sessions
+  NORMAL    j/k  move │  Enter  open │  /  search │  ?  help         0 sessions

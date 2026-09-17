@@ -4,10 +4,10 @@ assertion_line: 440
 expression: buffer_to_string(&terminal)
 ---
                                                                │
-  zzzznotfound                                                 │  /  /test/cwd
+  zzzznotfound                                                 │  s  /test/cwd
                                                                │
 
-  No results. Press  /  to search everywhere.
+  No results. Press  s  to search everywhere.
 
 
 
@@ -26,4 +26,4 @@ expression: buffer_to_string(&terminal)
 
 
 
-  F1 keyboard shortcuts                                              2 sessions
+  NORMAL    j/k  move │  Enter  open │  /  search │  ?  help         2 sessions

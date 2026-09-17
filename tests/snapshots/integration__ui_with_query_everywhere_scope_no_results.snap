@@ -4,7 +4,7 @@ assertion_line: 462
 expression: buffer_to_string(&terminal)
 ---
                                                               │
-  zzzznotfound                                                │  /  everywhere
+  zzzznotfound                                                │  s  everywhere
                                                               │
 
   No results.
@@ -26,4 +26,4 @@ expression: buffer_to_string(&terminal)
 
 
 
-  F1 keyboard shortcuts                                              2 sessions
+  NORMAL    j/k  move │  Enter  open │  /  search │  ?  help         2 sessions

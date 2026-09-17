@@ -1,4 +1,4 @@
-use crate::app::{App, SearchScope};
+use crate::app::{App, InputMode, Pane, SearchScope};
 use crate::project::{project_name, worktree_name};
 use crate::session::{Role, Session, SessionSource};
 use crate::theme::Theme;
@@ -18,25 +18,35 @@ use std::sync::OnceLock;
 /// Keep in sync with `App::on_key`, `Transcript::on_key` and the README.
 pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     (
-        "Sessions",
+        "Session list (normal mode)",
         &[
-            ("↑ ↓", "Move one session"),
-            ("PgUp PgDn", "Move one page"),
-            ("Ctrl+U Ctrl+D", "Move half a page"),
-            ("Home End", "First / last session"),
+            ("j k  ↑ ↓", "Next / previous session"),
+            ("g G  Home End", "First / last session"),
+            ("Ctrl+D Ctrl+U", "Half a page down / up"),
+            ("Ctrl+F Ctrl+B", "Full page down / up"),
             ("Enter", "Open transcript"),
             ("Ctrl+R", "Resume conversation"),
-            ("Tab", "Copy session ID"),
-            ("Ctrl+Y", "Copy resume command"),
+            ("/  i", "Type a search"),
+            ("s", "Switch project / everywhere"),
+            ("t  Ctrl+S", "Filter by tool: Claude, Codex…"),
+            ("y", "Copy session ID"),
+            ("Y  Ctrl+Y", "Copy resume command"),
+            ("Tab  Ctrl+W w", "Switch to the preview"),
+            ("Esc", "Clear search"),
+            ("q", "Quit"),
         ],
     ),
     (
-        "Preview",
+        "Preview (after Tab)",
         &[
-            ("Shift+↑ ↓", "Previous / next message"),
-            ("Ctrl+E", "Expand / collapse message"),
+            ("j k  ↑ ↓", "Scroll one line"),
+            ("Ctrl+D Ctrl+U", "Half a page down / up"),
+            ("g G", "First / last message"),
+            ("] [  J K", "Next / previous message"),
+            ("o  Ctrl+E", "Expand / collapse message"),
+            ("Enter", "Open transcript at this message"),
+            ("Tab  Esc", "Back to the session list"),
             ("Mouse wheel", "Scroll"),
-            ("Click", "Select message"),
             ("Double-click", "Expand / collapse message"),
         ],
     ),
@@ -49,42 +59,65 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Space PgDn PgUp", "Full page down / up"),
             ("g G  Home End", "Top / bottom"),
             ("] [  J K", "Next / previous message"),
-            ("Shift+↓ ↑", "Next / previous message"),
             ("} {", "Next / previous message of yours"),
             ("/", "Search in transcript"),
             ("n N", "Next / previous match"),
-            ("Enter Ctrl+R", "Resume conversation"),
-            ("y Tab", "Copy session ID"),
-            ("Y Ctrl+Y", "Copy resume command"),
-            ("q Esc", "Back to sessions"),
+            ("Enter  Ctrl+R", "Resume conversation"),
+            ("y", "Copy session ID"),
+            ("Y  Ctrl+Y", "Copy resume command"),
+            ("q  Esc", "Back to sessions"),
         ],
     ),
     (
-        "Search",
+        "Typing a search (after /)",
         &[
-            ("type", "Words match the start of words"),
+            ("Enter  Esc", "Done: back to normal mode"),
+            ("↑ ↓", "Next / previous session"),
+            ("Ctrl+W", "Delete previous word"),
+            ("Ctrl+U", "Delete to start"),
+            ("Ctrl+A Ctrl+E", "Start / end of search"),
             ("\"a b\"", "Exact phrase"),
             ("since:2w", "Sessions after (also after:)"),
             ("until:3d", "Sessions before (also before:)"),
             ("", "Dates: 12h 3d 2w 6mo 1y today"),
             ("", "yesterday 2025-12-01"),
-            ("/", "Switch project / everywhere"),
-            ("Ctrl+S", "Filter by tool: Claude, Codex…"),
-            ("← → Ctrl+A", "Move cursor"),
-            ("Backspace Del", "Delete character"),
-            ("Esc", "Clear search; quit when empty"),
         ],
     ),
     (
         "Help",
         &[
-            ("?", "This panel (when search is empty)"),
-            ("F1", "This panel (any time)"),
-            ("↑ ↓", "Scroll this panel"),
-            ("Ctrl+C", "Quit"),
+            ("?  F1", "This panel"),
+            ("j k", "Scroll this panel"),
+            ("Ctrl+C", "Quit from anywhere"),
         ],
     ),
 ];
+
+/// Key hints for the bottom row, most important first; the ones that don't
+/// fit are left out, and "? help" is always kept
+fn hint_spans(hints: &[(&str, &str)], help_key: &str, width: usize) -> Vec<Span<'static>> {
+    let t = theme();
+    let keycap = Style::default().bg(t.keycap_bg);
+    let dim = Style::default().fg(t.dim_fg);
+    let piece_width = |key: &str, action: &str| key.chars().count() + action.chars().count() + 3;
+    let separator = 3;
+    let help_width = piece_width(help_key, "help");
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for (key, action) in hints {
+        let piece = piece_width(key, action) + separator;
+        if used + piece + help_width > width {
+            break;
+        }
+        spans.push(Span::styled(format!(" {} ", key), keycap));
+        spans.push(Span::raw(format!(" {}", action)));
+        spans.push(Span::styled(" │ ", dim));
+        used += piece;
+    }
+    spans.push(Span::styled(format!(" {} ", help_key), keycap));
+    spans.push(Span::raw(" help"));
+    spans
+}
 
 fn theme() -> &'static Theme {
     static THEME: OnceLock<Theme> = OnceLock::new();
@@ -153,7 +186,15 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             .split(content_with_padding[1]);
 
         render_results_list(frame, app, content_layout[0]);
-        // content_layout[1] is the padding space - left empty
+        // A line in the gap between the panes marks the preview as focused
+        if app.focused_pane == Pane::Preview {
+            let gap = content_layout[1];
+            let line = Rect { x: gap.x + 1, width: 1, ..gap };
+            let bar: Vec<Line> = (0..line.height)
+                .map(|_| Line::styled("┃", Style::default().fg(theme().accent)))
+                .collect();
+            frame.render_widget(Paragraph::new(bar), line);
+        }
         render_preview(frame, app, content_layout[2]);
     }
 
@@ -316,7 +357,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let label_color = t.scope_label_fg;
     let scope_widget = vec![
         Span::styled(" │ ", Style::default().fg(separator_color)),  // separator
-        Span::styled(" / ", Style::default().bg(t.keycap_bg)),  // keycap like status bar
+        Span::styled(" s ", Style::default().bg(t.keycap_bg)),  // keycap like status bar
         Span::styled(format!(" {} ", scope_label), Style::default().fg(label_color)),  // label
     ];
     let scope_width: usize = 3 + 3 + 1 + scope_label.chars().count() + 1; // " │ " + " / " + " label "
@@ -325,8 +366,8 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let search_width = (area.width as usize).saturating_sub(scope_width + 1); // +1 for left margin before widget
 
     // Build middle line with search on left, scope widget on right
-    let middle_line = if app.query.is_empty() {
-        let placeholder = " Search...";
+    let middle_line = if app.query.is_empty() && app.input_mode == InputMode::Normal {
+        let placeholder = " Press / to search";
         let padding = search_width.saturating_sub(placeholder.len());
         let mut spans = vec![
             Span::styled(placeholder, Style::default().fg(t.placeholder_fg)),
@@ -351,13 +392,15 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
             String::new()
         };
 
+        let cursor_style = if app.input_mode == InputMode::Search {
+            Style::default().fg(t.search_bg).bg(t.accent)
+        } else {
+            Style::default()
+        };
         let mut spans = vec![
             Span::raw(" "),
             Span::raw(before),
-            Span::styled(
-                cursor_char.to_string(),
-                Style::default().fg(t.search_bg).bg(t.accent),
-            ),
+            Span::styled(cursor_char.to_string(), cursor_style),
             Span::raw(after),
             Span::raw(" ".repeat(padding)), // fill to push scope right
             Span::styled(" ", Style::default()), // margin before widget
@@ -396,7 +439,7 @@ fn render_results_list(frame: &mut Frame, app: &mut App, area: Rect) {
             let prefix = if app.query.is_empty() { "Nothing here." } else { "No results." };
             let hint = Line::from(vec![
                 Span::styled(format!(" {} Press ", prefix), Style::default().fg(t.snippet_fg)),
-                Span::styled(" / ", Style::default().bg(t.keycap_bg)),
+                Span::styled(" s ", Style::default().bg(t.keycap_bg)),
                 Span::styled(" to search everywhere.", Style::default().fg(t.snippet_fg)),
             ]);
             frame.render_widget(Paragraph::new(hint), area);
@@ -708,19 +751,58 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-/// Bottom row: a status message when there is one, otherwise how to open the
-/// shortcuts panel (the panel lists every key)
+/// Bottom row: mode, then a status message or the main keys for the mode and pane
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let t = theme();
-    let dim = Style::default().fg(t.dim_fg);
 
-    let hints: Line = if let Some(msg) = app.flash_message().or(app.status.as_deref()) {
-        Line::from(Span::styled(msg.to_string(), Style::default().fg(t.match_fg)))
-    } else {
-        // '?' is typed into the search once the search box has text
-        let help_key = if app.query.is_empty() { "?" } else { "F1" };
-        Line::from(Span::styled(format!(" {} keyboard shortcuts", help_key), dim))
+    let (mode, mode_style) = match (app.input_mode, app.focused_pane) {
+        (InputMode::Search, _) => (" SEARCH ", Style::default().fg(t.search_bg).bg(t.accent)),
+        (InputMode::Normal, Pane::List) => (" NORMAL ", Style::default().bg(t.keycap_bg)),
+        (InputMode::Normal, Pane::Preview) => (" PREVIEW ", Style::default().bg(t.keycap_bg)),
     };
+    let mut spans = vec![
+        Span::styled(mode, mode_style.add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+    ];
+    let room = (area.width as usize).saturating_sub(mode.len() + 2 + 16);
+
+    if let Some(msg) = app.flash_message().or(app.status.as_deref()) {
+        spans.push(Span::styled(msg.to_string(), Style::default().fg(t.match_fg)));
+    } else {
+        let hints: &[(&str, &str)] = match (app.input_mode, app.focused_pane) {
+            (InputMode::Search, _) => &[
+                ("Enter", "done"),
+                ("Esc", "done"),
+                ("^W", "delete word"),
+                ("^U", "clear"),
+            ],
+            (InputMode::Normal, Pane::List) => &[
+                ("j/k", "move"),
+                ("Enter", "open"),
+                ("/", "search"),
+                ("g/G", "first/last"),
+                ("Tab", "preview"),
+                ("^R", "resume"),
+                ("y", "copy ID"),
+                ("s", "scope"),
+                ("t", "tool"),
+                ("q", "quit"),
+            ],
+            (InputMode::Normal, Pane::Preview) => &[
+                ("j/k", "scroll"),
+                ("g/G", "first/last message"),
+                ("]/[", "message"),
+                ("Enter", "open here"),
+                ("o", "expand"),
+                ("Tab", "list"),
+                ("q", "quit"),
+            ],
+        };
+        let help_key = if app.input_mode == InputMode::Search { "F1" } else { "?" };
+        spans.extend(hint_spans(hints, help_key, room));
+    }
+    let hints = Line::from(spans);
+    let dim = Style::default().fg(t.dim_fg);
 
     let sessions_count = Span::styled(
         format!(" {} sessions", app.total_sessions),
@@ -910,7 +992,28 @@ fn render_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     } else if let Some(message) = flash {
         Line::styled(message, Style::default().fg(t.match_fg))
     } else {
-        Line::styled("q back  ·  ? keyboard shortcuts", dim)
+        let with_search: &[(&str, &str)] = &[
+            ("n/N", "next/previous match"),
+            ("Esc", "clear search"),
+            ("j/k", "scroll"),
+            ("d/u", "half page"),
+            ("g/G", "top/bottom"),
+            ("]/[", "message"),
+            ("q", "back"),
+        ];
+        let normal: &[(&str, &str)] = &[
+            ("j/k", "scroll"),
+            ("g/G", "top/bottom"),
+            ("d/u", "half page"),
+            ("q", "back"),
+            ("/", "search"),
+            ("]/[", "message"),
+            ("Enter", "resume"),
+            ("y", "copy ID"),
+        ];
+        let hints = if transcript.search.is_empty() { normal } else { with_search };
+        let room = (status_area.width as usize).saturating_sub(position.chars().count() + 2);
+        Line::from(hint_spans(hints, "?", room))
     };
 
     let status = Layout::default()
