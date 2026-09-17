@@ -152,8 +152,12 @@ never reads these files again.
 ## Working on this copy
 
 Start new work from this folder (`cd ~/Programming/recall`, then start the
-agent), so `CLAUDE.md` and this file are read. Nothing is pushed: `origin` is
-still upstream `zippoxer/recall`, and there is no fork yet.
+agent), so `CLAUDE.md` and this file are read.
+
+- `origin` is the fork, <https://github.com/sam-ghosh/recall>; the changes are
+  on branch `project-scope-and-prefix-search`.
+- `upstream` is <https://github.com/zippoxer/recall>. To take in upstream
+  changes: `git fetch upstream`, rebase onto `upstream/master`, run the checks.
 
 ### Checks before committing
 
