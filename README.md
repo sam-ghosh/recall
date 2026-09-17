@@ -2,6 +2,8 @@
 
 Search and resume your Claude Code conversations. Also supports Codex, OpenCode and Factory (Droid).
 
+**This copy has changes from upstream** (project scope with worktrees, word-start search, transcript view, nvim-style keys, filters): see [readme_sg.md](readme_sg.md).
+
 **Tip**: Don't like reading? Tell your agent to use `recall search --help` and it'll search for you.
 
 ![screenshot](screenshot-dark.png)
