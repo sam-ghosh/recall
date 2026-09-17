@@ -33,7 +33,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("Y  Ctrl+Y", "Copy resume command"),
             ("Tab  Ctrl+W w", "Switch to the preview"),
             ("Esc", "Clear search"),
-            ("q", "Quit"),
+            ("Ctrl+C", "Quit"),
         ],
     ),
     (
@@ -62,7 +62,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("} {", "Next / previous message of yours"),
             ("/", "Search in transcript"),
             ("n N", "Next / previous match"),
-            ("Enter  Ctrl+R", "Resume conversation"),
+            ("Ctrl+R", "Resume conversation"),
             ("y", "Copy session ID"),
             ("Y  Ctrl+Y", "Copy resume command"),
             ("q  Esc", "Back to sessions"),
@@ -88,7 +88,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("?  F1", "This panel"),
             ("j k", "Scroll this panel"),
-            ("Ctrl+C", "Quit from anywhere"),
+            ("Ctrl+C", "Quit (the only way to quit)"),
         ],
     ),
 ];
@@ -786,7 +786,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ("y", "copy ID"),
                 ("s", "scope"),
                 ("t", "tool"),
-                ("q", "quit"),
+                ("^C", "quit"),
             ],
             (InputMode::Normal, Pane::Preview) => &[
                 ("j/k", "scroll"),
@@ -795,7 +795,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 ("Enter", "open here"),
                 ("o", "expand"),
                 ("Tab", "list"),
-                ("q", "quit"),
+                ("^C", "quit"),
             ],
         };
         let help_key = if app.input_mode == InputMode::Search { "F1" } else { "?" };
@@ -1008,7 +1008,7 @@ fn render_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
             ("q", "back"),
             ("/", "search"),
             ("]/[", "message"),
-            ("Enter", "resume"),
+            ("^R", "resume"),
             ("y", "copy ID"),
         ];
         let hints = if transcript.search.is_empty() { normal } else { with_search };

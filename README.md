@@ -33,7 +33,7 @@ recall
 ```
 
 **That's it.** Keys work like nvim: recall opens in normal mode, `/` types a
-search, Enter opens a conversation, Enter again jumps back in. `?` lists every key.
+search, Enter opens a conversation, Ctrl+R jumps back in. `?` lists every key.
 The bottom row shows the mode and the main keys for where you are.
 
 ### Session list (normal mode)
@@ -52,7 +52,7 @@ The bottom row shows the mode and the main keys for where you are.
 | `Y` / `Ctrl+Y` | Copy resume command (`cd '<folder>' && claude --resume <id>`) |
 | `Tab` / `Ctrl+W w` | Switch between the list and the preview |
 | `Esc` | Clear search |
-| `q` | Quit |
+| `Ctrl+C` | Quit (Esc and q never quit) |
 
 ### Preview (after `Tab`)
 
@@ -87,7 +87,7 @@ The whole conversation, full screen.
 | `]` `[` / `J` `K` / `Shift+↓↑` | Next/previous message |
 | `}` `{` | Next/previous message of yours |
 | `/` then `n` `N` | Search in the transcript, next/previous match |
-| `Enter` / `Ctrl+R` | Resume conversation |
+| `Ctrl+R` | Resume conversation |
 | `y` | Copy session ID |
 | `Y` / `Ctrl+Y` | Copy resume command |
 | `q` / `Esc` | Back to the session list |

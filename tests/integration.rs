@@ -319,9 +319,9 @@ fn test_escape_clears_query() {
     assert!(app.query.is_empty(), "Escape should clear query");
     assert!(!app.should_quit, "First escape should not quit");
 
-    // Second escape should quit
+    // Escape with an empty search does nothing: only Ctrl+C quits
     app.on_escape();
-    assert!(app.should_quit, "Second escape should quit");
+    assert!(!app.should_quit, "Second escape should not quit");
 
     std::env::remove_var("RECALL_HOME_OVERRIDE");
 }

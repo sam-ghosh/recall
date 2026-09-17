@@ -266,7 +266,7 @@ impl Transcript {
             }
             KeyCode::Esc | KeyCode::Char('q') => return TranscriptAction::Close,
             KeyCode::Char('?') | KeyCode::F(1) => return TranscriptAction::ShowHelp,
-            KeyCode::Enter => return TranscriptAction::Resume,
+            // Only Ctrl+R resumes, so a stray Enter doesn't leave recall
             KeyCode::Char('r') if ctrl => return TranscriptAction::Resume,
             KeyCode::Char('y') if ctrl => return TranscriptAction::CopyResumeCommand,
             KeyCode::Char('Y') => return TranscriptAction::CopyResumeCommand,
@@ -485,7 +485,8 @@ mod tests {
     fn test_actions() {
         let mut t = transcript();
         assert_eq!(press(&mut t, KeyCode::Char('q')), TranscriptAction::Close);
-        assert_eq!(press(&mut t, KeyCode::Enter), TranscriptAction::Resume);
+        assert_eq!(press(&mut t, KeyCode::Enter), TranscriptAction::None);
+        assert_eq!(press_ctrl(&mut t, 'r'), TranscriptAction::Resume);
         assert_eq!(press(&mut t, KeyCode::Char('y')), TranscriptAction::CopySessionId);
         assert_eq!(press(&mut t, KeyCode::Char('Y')), TranscriptAction::CopyResumeCommand);
         assert_eq!(press_ctrl(&mut t, 'y'), TranscriptAction::CopyResumeCommand);

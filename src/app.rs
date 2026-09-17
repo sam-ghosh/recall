@@ -121,7 +121,7 @@ pub struct App {
     pub transcript: Option<Transcript>,
     /// Should quit
     pub should_quit: bool,
-    /// Should execute resume (set on Ctrl+R, or Enter in the transcript view)
+    /// Should execute resume (set on Ctrl+R)
     pub should_resume: Option<Session>,
     /// Text for the main loop to copy, and what to call it in the status bar
     pub pending_copy: Option<(String, &'static str)>,
@@ -600,7 +600,6 @@ impl App {
             KeyCode::Char('w') if ctrl => return self.pending_window_key = true,
             KeyCode::Tab | KeyCode::BackTab => return self.switch_pane(),
             KeyCode::Char('?') => return self.open_help(),
-            KeyCode::Char('q') => return self.should_quit = true,
             KeyCode::Char('/') | KeyCode::Char('i') | KeyCode::Char('a') if !ctrl => {
                 self.focused_pane = Pane::List;
                 self.input_mode = InputMode::Search;
@@ -731,10 +730,9 @@ impl App {
     }
 
     /// Clear search
+    /// Clear the search. Never quits: only Ctrl+C does.
     pub fn on_escape(&mut self) {
-        if self.query.is_empty() {
-            self.should_quit = true;
-        } else {
+        if !self.query.is_empty() {
             self.query.clear();
             self.cursor = 0;
             self.mark_search_pending();
@@ -1493,11 +1491,13 @@ mod tests {
     }
 
     #[test]
-    fn test_enter_in_transcript_resumes() {
+    fn test_ctrl_r_in_transcript_resumes_and_enter_does_not() {
         let (mut app, _dir) = app_with_session_file();
         press(&mut app, KeyCode::Enter);
 
         press(&mut app, KeyCode::Enter);
+        assert!(app.should_resume.is_none());
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
 
         assert_eq!(app.should_resume.as_ref().map(|s| s.messages.len()), Some(2));
     }
@@ -1651,6 +1651,9 @@ mod tests {
         assert!(app.show_help);
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Char('q'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.should_quit, "only Ctrl+C quits");
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
