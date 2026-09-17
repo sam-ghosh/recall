@@ -736,9 +736,6 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(sessions_count), layout[1]);
 }
 
-/// Widest the transcript text gets, so long lines stay readable on wide screens
-const TRANSCRIPT_MAX_WIDTH: u16 = 120;
-
 /// Label, accent colour and background colour for a message's author
 fn role_style(session: &Session, role: Role) -> (&'static str, Color, Color) {
     let t = theme();
@@ -809,9 +806,9 @@ fn render_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // Messages column: centred, at most TRANSCRIPT_MAX_WIDTH wide, with a
-    // scrollbar at the right edge of the screen
-    let body_width = area.width.saturating_sub(4).min(TRANSCRIPT_MAX_WIDTH);
+    // Messages use the full width, less a two-column margin each side (the
+    // scrollbar sits in the right margin)
+    let body_width = area.width.saturating_sub(4);
     let body = Rect {
         x: area.x + (area.width.saturating_sub(body_width)) / 2,
         y: rows[2].y,
