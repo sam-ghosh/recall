@@ -1,5 +1,10 @@
 # CLAUDE.md
 
+**This is a modified copy of upstream recall. Read [readme_sg.md](readme_sg.md)
+first:** it lists every change, the checks to run, how to try the TUI in tmux,
+how to install on home-mac, and the mistakes to avoid. Add new changes and
+findings there.
+
 ## Purpose
 
 Search and resume past conversations from Claude Code, Codex CLI, and Factory (Droid).
@@ -10,7 +15,7 @@ Search and resume past conversations from Claude Code, Codex CLI, and Factory (D
 - **Simple, uncluttered, focused** - Two panes, keyboard-driven, no chrome
 - **Responsive** - Instant startup via background indexing, sub-100ms search
 - **Match-recency matters** - Rank by most recent message containing the match (human memory anchors to recent context)
-- **Seamless resume** - Enter execs directly into the CLI, no intermediate steps
+- **Seamless resume** - Ctrl+R execs directly into the CLI, no intermediate steps
 
 ## Development
 

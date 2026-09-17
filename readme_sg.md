@@ -149,6 +149,103 @@ never reads these files again.
   (daily at 04:15 and at login)
 - Log: `~/.local/log/delete-old-claude-mem-observer-sessions.log`
 
+## Working on this copy
+
+Start new work from this folder (`cd ~/Programming/recall`, then start the
+agent), so `CLAUDE.md` and this file are read. Nothing is pushed: `origin` is
+still upstream `zippoxer/recall`, and there is no fork yet.
+
+### Checks before committing
+
+1. `cargo test` must pass (about 160 tests, 8 seconds).
+2. `cargo build 2>&1 | grep -c warning` should print 0.
+3. Try the change in tmux with real sessions (see below).
+4. `cargo install --path .`, then install on home-mac (see below).
+
+### Trying the TUI in tmux
+
+```bash
+tmux new-session -d -s rt -x 160 -y 40 -c ~/Programming/xenia 'recall; echo EXITED; sleep 30'
+tmux send-keys -t rt j            # one key
+tmux send-keys -t rt -l 'since:2w' # literal text
+tmux capture-pane -p -t rt | tail -3
+tmux kill-session -t rt
+```
+
+- Wait a moment between keys. `Escape` followed quickly by another key arrives
+  as one Alt+key press, so the app sees neither `Esc` nor the key.
+- Wrap the command as `'recall; echo EXITED; sleep 30'` to see whether a key
+  quit the app.
+- `tmux capture-pane` shows text but not colours; check highlighting by eye.
+
+### Installing on home-mac
+
+```bash
+rsync -a --delete --exclude target ~/Programming/recall/ home-mac:Programming/recall/
+ssh home-mac 'export PATH="$HOME/.cargo/bin:$PATH"; cd ~/Programming/recall && CARGO_NET_GIT_FETCH_WITH_CLI=true cargo install --path .'
+rsync -a ~/.config/recall/config.toml home-mac:.config/recall/config.toml
+```
+
+Plain `cargo install` over SSH fails to fetch the `crossterm` git dependency
+("no authentication methods succeeded"); `CARGO_NET_GIT_FETCH_WITH_CLI=true`
+uses git's own credentials.
+
+### Things that caught us out
+
+- **Snapshot tests** (`tests/snapshots/*.snap`, insta) fail whenever the search
+  bar or bottom row changes. Look at the difference before accepting:
+  `for f in tests/snapshots/*.snap.new; do diff "${f%.new}" "$f"; done`, then
+  `mv` each `.snap.new` over its `.snap`.
+- **Index format changes**: bump `SCHEMA_VERSION` in `src/index/schema.rs`
+  when fields or what is stored in them change. recall then deletes and rebuilds
+  the index (and `state.json`) on start. Without the bump, old documents lack
+  the new fields.
+- **`state.json` only records file size and modified time.** A change to what
+  gets indexed from an unchanged file needs either the schema bump or a change
+  in `Config::indexing_fingerprint`.
+- **Filters belong inside the tantivy query** (`SearchFilter`,
+  `apply_filter`). Filtering results afterwards runs after the result limit,
+  which is how upstream's project view came up empty.
+- **The project filter** matches `project_root` exactly or the range
+  `[root/, root0)` (`0` is the character after `/`), so `xenia` doesn't match
+  `xenia2` but does match `xenia/frontend`.
+- **Test session files must sit under `.claude/projects/`** (or `.codex/...`):
+  `parser::parse_session_file` picks the parser from the path.
+- **`RECALL_CLAUDE_CMD` is set in this shell** (adds
+  `--dangerously-skip-permissions`), so tests must not compare exact resume
+  commands.
+- **`cargo fmt` rewrites the whole crate** (upstream isn't formatted). Don't run
+  it; it buries the real change in the diff.
+- **Keys**: `App::on_key` sends keys by help panel → transcript → keys that
+  work everywhere → search or normal mode → list or preview pane. Update
+  `ui::SHORTCUTS`, the bottom-row hints in `ui.rs`, the README tables and this
+  file together; `test_help_panel_lists_shortcuts` checks that every key in
+  `SHORTCUTS` shows in the panel.
+- **Ambiguous-width characters** (`↑`, `↓` inside key boxes) drew misaligned in
+  the user's terminal font. Bottom-row hints use letters (`j/k`, `^R`).
+- **Transcript lines** are built once per width and highlight
+  (`Transcript::lines_built_for`); rebuilding every frame is slow for long
+  sessions.
+
+### Where session data lives
+
+- Claude Code: `~/.claude/projects/<folder-with-dashes>/<session-id>.jsonl`.
+  Titles are `custom-title` (`customTitle`, from `/rename`) and `ai-title`
+  (`aiTitle`) lines.
+- Codex: `~/.codex/sessions/**/rollout-*.jsonl`; titles in
+  `~/.codex/session_index.jsonl` (`id`, `thread_name`, last line wins).
+- Index: `~/Library/Caches/recall/` (`index/`, `state.json`,
+  `recall-schema-version`). `recall --reindex` deletes it.
+- claude-mem observer sessions:
+  `~/.claude/projects/-Users-samg--claude-mem-observer-sessions/`. One per
+  background observer run; claude-mem never reads them again (its memory is in
+  `~/.claude-mem/claude-mem.db`), so deleting old ones is safe.
+
+### Reference
+
+`~/Programming/claude-history` (raine/claude-history) is cloned for
+comparison. Its viewer (`src/tui/`) was the model for the transcript view keys.
+
 ## Code
 
 New files:
