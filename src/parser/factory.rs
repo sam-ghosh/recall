@@ -13,7 +13,6 @@ struct FactoryLine {
     #[serde(rename = "type")]
     entry_type: String,
     id: Option<String>,
-    #[allow(dead_code)]
     title: Option<String>,
     cwd: Option<String>,
     timestamp: Option<String>,
@@ -42,6 +41,7 @@ impl SessionParser for FactoryParser {
 
         let mut session_id: Option<String> = None;
         let mut cwd: Option<String> = None;
+        let mut title: Option<String> = None;
         let mut latest_timestamp: Option<DateTime<Utc>> = None;
         let mut messages: Vec<Message> = Vec::new();
 
@@ -64,6 +64,9 @@ impl SessionParser for FactoryParser {
                     }
                     if cwd.is_none() {
                         cwd = entry.cwd.clone();
+                    }
+                    if entry.title.is_some() {
+                        title = entry.title.clone();
                     }
                 }
                 "message" => {
@@ -121,6 +124,7 @@ impl SessionParser for FactoryParser {
             file_path: path.to_path_buf(),
             cwd: cwd.unwrap_or_else(|| ".".to_string()),
             git_branch: None,
+            title: title.filter(|t| !t.trim().is_empty()),
             timestamp: latest_timestamp.unwrap_or_else(Utc::now),
             messages: join_consecutive_messages(messages),
         })

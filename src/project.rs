@@ -27,9 +27,48 @@ pub fn project_root(cwd: &str) -> String {
     }
 }
 
+/// The worktree folder name when a working directory is inside a git
+/// worktree. `/p/xenia__worktrees/fix-bug/src` gives `fix-bug`.
+pub fn worktree_name(cwd: &str) -> Option<String> {
+    let (pos, marker) = WORKTREE_MARKERS
+        .iter()
+        .filter_map(|marker| cwd.find(marker).map(|pos| (pos, marker)))
+        .min_by_key(|(pos, _)| *pos)?;
+    let rest = &cwd[pos + marker.len()..];
+    let name = rest.split('/').next().unwrap_or("");
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Last folder name of the project a working directory belongs to
+pub fn project_name(cwd: &str) -> String {
+    let root = project_root(cwd);
+    root.rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or(&root)
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_worktree_name() {
+        assert_eq!(
+            worktree_name("/p/xenia__worktrees/fix-bug/src").as_deref(),
+            Some("fix-bug")
+        );
+        assert_eq!(worktree_name("/p/xenia/.worktrees/fix-bug").as_deref(), Some("fix-bug"));
+        assert_eq!(worktree_name("/p/xenia/src"), None);
+        assert_eq!(worktree_name("/p/xenia__worktrees"), None);
+    }
+
+    #[test]
+    fn test_project_name() {
+        assert_eq!(project_name("/p/xenia__worktrees/fix-bug/src"), "xenia");
+        assert_eq!(project_name("/p/xenia"), "xenia");
+        assert_eq!(project_name("/"), "/");
+    }
 
     #[test]
     fn test_plain_folder_is_its_own_root() {

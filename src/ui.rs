@@ -1,17 +1,21 @@
 use crate::app::{App, SearchScope};
-use crate::session::{Role, SessionSource};
+use crate::project::{project_name, worktree_name};
+use crate::session::{Role, Session, SessionSource};
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{
+        Block, Borders, Clear, List, ListItem, ListState, Paragraph, Scrollbar,
+        ScrollbarOrientation, ScrollbarState,
+    },
     Frame,
 };
 use std::sync::OnceLock;
 
 /// Keyboard shortcuts shown in the `?` panel, grouped by section.
-/// Keep in sync with `App::on_key` and the README.
+/// Keep in sync with `App::on_key`, `Transcript::on_key` and the README.
 pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
     (
         "Sessions",
@@ -20,8 +24,10 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
             ("PgUp PgDn", "Move one page"),
             ("Ctrl+U Ctrl+D", "Move half a page"),
             ("Home End", "First / last session"),
-            ("Enter", "Resume conversation"),
-            ("Tab", "Copy session ID and quit"),
+            ("Enter", "Open transcript"),
+            ("Ctrl+R", "Resume conversation"),
+            ("Tab", "Copy session ID"),
+            ("Ctrl+Y", "Copy resume command"),
         ],
     ),
     (
@@ -35,11 +41,35 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Transcript",
+        &[
+            ("j k  ↑ ↓", "Scroll one line"),
+            ("d u  Ctrl+D U", "Half a page down / up"),
+            ("f b  Ctrl+F B", "Full page down / up"),
+            ("Space PgDn PgUp", "Full page down / up"),
+            ("g G  Home End", "Top / bottom"),
+            ("] [  J K", "Next / previous message"),
+            ("Shift+↓ ↑", "Next / previous message"),
+            ("} {", "Next / previous message of yours"),
+            ("/", "Search in transcript"),
+            ("n N", "Next / previous match"),
+            ("Enter Ctrl+R", "Resume conversation"),
+            ("y Tab", "Copy session ID"),
+            ("Y Ctrl+Y", "Copy resume command"),
+            ("q Esc", "Back to sessions"),
+        ],
+    ),
+    (
         "Search",
         &[
             ("type", "Words match the start of words"),
             ("\"a b\"", "Exact phrase"),
+            ("since:2w", "Sessions after (also after:)"),
+            ("until:3d", "Sessions before (also before:)"),
+            ("", "Dates: 12h 3d 2w 6mo 1y today"),
+            ("", "yesterday 2025-12-01"),
             ("/", "Switch project / everywhere"),
+            ("Ctrl+S", "Filter by tool: Claude, Codex…"),
             ("← → Ctrl+A", "Move cursor"),
             ("Backspace Del", "Delete character"),
             ("Esc", "Clear search; quit when empty"),
@@ -50,6 +80,7 @@ pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("?", "This panel (when search is empty)"),
             ("F1", "This panel (any time)"),
+            ("↑ ↓", "Scroll this panel"),
             ("Ctrl+C", "Quit"),
         ],
     ),
@@ -63,6 +94,14 @@ fn theme() -> &'static Theme {
 /// Main UI rendering
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+
+    if app.transcript.is_some() {
+        render_transcript(frame, app, area);
+        if app.show_help {
+            render_help(frame, app, area);
+        }
+        return;
+    }
 
     // Main layout: search bar (3 lines with padding), spacing, content, spacing, status bar
     let main_layout = Layout::default()
@@ -131,15 +170,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_status_bar(frame, app, status_with_padding[1]);
 
     if app.show_help {
-        render_help(frame, area);
+        render_help(frame, app, area);
     }
 }
 
 /// Keyboard shortcuts panel, centered over the rest of the UI
-fn render_help(frame: &mut Frame, area: Rect) {
+fn render_help(frame: &mut Frame, app: &mut App, area: Rect) {
     let t = theme();
-    const KEY_WIDTH: usize = 15;
-    const COLUMN_WIDTH: usize = KEY_WIDTH + 36;
+    const KEY_WIDTH: usize = 17;
+    const COLUMN_WIDTH: usize = KEY_WIDTH + 34;
+    const COLUMN_GAP: usize = 2;
 
     let section_lines = |sections: &[(&str, &[(&str, &str)])]| -> Vec<Line<'static>> {
         let mut lines = Vec::new();
@@ -164,18 +204,19 @@ fn render_help(frame: &mut Frame, area: Rect) {
         lines
     };
 
-    // Two columns when there is room, otherwise one
-    let two_columns = area.width as usize >= COLUMN_WIDTH * 2 + 6;
-    let columns: Vec<Vec<Line>> = if two_columns {
-        vec![section_lines(&SHORTCUTS[..2]), section_lines(&SHORTCUTS[2..])]
-    } else {
-        vec![section_lines(SHORTCUTS)]
-    };
+    // As many columns as fit (up to 3), with sections split so the columns
+    // are about the same height
+    let fitting = (area.width as usize + COLUMN_GAP).saturating_sub(4) / (COLUMN_WIDTH + COLUMN_GAP);
+    let column_count = fitting.clamp(1, 3);
+    let columns: Vec<Vec<Line>> = split_sections(SHORTCUTS, column_count)
+        .into_iter()
+        .map(|sections| section_lines(sections))
+        .collect();
 
-    let inner_height = columns.iter().map(|c| c.len()).max().unwrap_or(0) as u16;
-    let inner_width = (COLUMN_WIDTH * columns.len() + 2 * (columns.len() - 1)) as u16;
-    let width = (inner_width + 4).min(area.width);
-    let height = (inner_height + 2).min(area.height);
+    let content_height = columns.iter().map(|c| c.len()).max().unwrap_or(0);
+    let inner_width = COLUMN_WIDTH * columns.len() + COLUMN_GAP * (columns.len() - 1);
+    let width = (inner_width as u16 + 4).min(area.width);
+    let height = (content_height as u16 + 2).min(area.height);
     let panel = Rect {
         x: area.x + (area.width - width) / 2,
         y: area.y + (area.height - height) / 2,
@@ -183,11 +224,20 @@ fn render_help(frame: &mut Frame, area: Rect) {
         height,
     };
 
+    let visible_height = height.saturating_sub(2) as usize;
+    let max_scroll = content_height.saturating_sub(visible_height);
+    app.help_scroll = app.help_scroll.min(max_scroll);
+    let bottom_title = if max_scroll > 0 {
+        " ↑↓ scroll · Esc or ? to close "
+    } else {
+        " Esc or ? to close "
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(t.dim_fg))
         .title(Span::styled(" Keyboard shortcuts ", Style::default().add_modifier(Modifier::BOLD)))
-        .title_bottom(Line::styled(" Esc or ? to close ", Style::default().fg(t.dim_fg)).right_aligned());
+        .title_bottom(Line::styled(bottom_title, Style::default().fg(t.dim_fg)).right_aligned());
     let inner = block.inner(panel);
     frame.render_widget(Clear, panel);
     frame.render_widget(block, panel);
@@ -196,23 +246,70 @@ fn render_help(frame: &mut Frame, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
         .split(inner)[1];
+    let mut constraints = Vec::new();
+    for i in 0..columns.len() {
+        if i > 0 {
+            constraints.push(Constraint::Length(COLUMN_GAP as u16));
+        }
+        constraints.push(Constraint::Length(COLUMN_WIDTH as u16));
+    }
     let column_areas = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(vec![Constraint::Ratio(1, columns.len() as u32); columns.len()])
+        .constraints(constraints)
         .split(inner);
-    for (lines, column_area) in columns.into_iter().zip(column_areas.iter()) {
-        frame.render_widget(Paragraph::new(lines), *column_area);
+    for (lines, column_area) in columns.into_iter().zip(column_areas.iter().step_by(2)) {
+        let paragraph = Paragraph::new(lines).scroll((app.help_scroll as u16, 0));
+        frame.render_widget(paragraph, *column_area);
     }
+}
+
+/// Split sections, in order, into at most `count` columns, choosing the split
+/// that makes the tallest column as short as possible
+fn split_sections<'a>(
+    sections: &'a [(&'a str, &'a [(&'a str, &'a str)])],
+    count: usize,
+) -> Vec<&'a [(&'a str, &'a [(&'a str, &'a str)])]> {
+    // Lines a run of sections takes: title and entries, blank line between sections
+    fn height(sections: &[(&str, &[(&str, &str)])]) -> usize {
+        sections.iter().map(|(_, entries)| entries.len() + 2).sum::<usize>().saturating_sub(1)
+    }
+    // Best (tallest column, split ends) for sections[start..] in `columns` columns
+    fn best(sections: &[(&str, &[(&str, &str)])], start: usize, columns: usize) -> (usize, Vec<usize>) {
+        if columns == 1 || sections.len() - start <= 1 {
+            return (height(&sections[start..]), vec![sections.len()]);
+        }
+        (start + 1..sections.len())
+            .map(|end| {
+                let (rest, mut ends) = best(sections, end, columns - 1);
+                ends.insert(0, end);
+                (height(&sections[start..end]).max(rest), ends)
+            })
+            .chain(std::iter::once((height(&sections[start..]), vec![sections.len()])))
+            .min_by_key(|(tallest, ends)| (*tallest, ends.len()))
+            .unwrap()
+    }
+
+    let (_, ends) = best(sections, 0, count.max(1));
+    let mut columns = Vec::new();
+    let mut start = 0;
+    for end in ends {
+        columns.push(&sections[start..end]);
+        start = end;
+    }
+    columns
 }
 
 fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
     let t = theme();
 
     // Scope widget content
-    let scope_label = match app.scope_display_path() {
+    let mut scope_label = match app.scope_display_path() {
         Some(path) => path,
         None => "everywhere".to_string(),
     };
+    if let Some(source) = app.source_filter {
+        scope_label = format!("{} · {} only", scope_label, source.display_name());
+    }
 
     // Widget: separator + keycap + label (no bg on label)
     let separator_color = t.separator_fg;
@@ -222,7 +319,7 @@ fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" / ", Style::default().bg(t.keycap_bg)),  // keycap like status bar
         Span::styled(format!(" {} ", scope_label), Style::default().fg(label_color)),  // label
     ];
-    let scope_width: usize = 3 + 3 + 1 + scope_label.len() + 1; // " │ " + " / " + " label "
+    let scope_width: usize = 3 + 3 + 1 + scope_label.chars().count() + 1; // " │ " + " / " + " label "
 
     // Calculate how much space for search text (leave room for scope widget + left margin)
     let search_width = (area.width as usize).saturating_sub(scope_width + 1); // +1 for left margin before widget
@@ -338,16 +435,36 @@ fn render_results_list(frame: &mut Frame, app: &mut App, area: Rect) {
                 Style::default()
             };
 
-            let header_spans = vec![
+            let mut header_spans = vec![
                 Span::styled("📁 ", header_style),
-                Span::styled(result.session.project_name(), header_style),
+                Span::styled(project_name(&result.session.cwd), header_style),
+            ];
+            if let Some(worktree) = worktree_name(&result.session.cwd) {
+                header_spans.push(Span::styled(
+                    format!(" ⎇ {}", worktree),
+                    Style::default().fg(t.dim_fg),
+                ));
+            }
+            header_spans.extend([
                 Span::styled("  ", header_style),
                 Span::styled(
                     format!("{} {}", result.session.source.icon(), result.session.source.display_name()),
                     Style::default().fg(source_color),
                 ),
                 Span::styled(format!("  {}", time_ago), header_style),
-            ];
+            ]);
+            // Title fills what is left of the header line
+            if let Some(title) = &result.session.title {
+                let used: usize = header_spans.iter().map(|s| s.width()).sum::<usize>() + 2;
+                let room = available_width.saturating_sub(used);
+                if room >= 8 {
+                    header_spans.push(Span::raw("  "));
+                    header_spans.push(Span::styled(
+                        truncate_to_width(title, room),
+                        header_style.add_modifier(Modifier::BOLD),
+                    ));
+                }
+            }
 
             // Truncate snippet to fit available width (Tantivy already centered it)
             let snippet: String = result.snippet.chars().take(available_width).collect();
@@ -435,14 +552,12 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let matched_message_index = result.matched_message_index;
     let match_fragment = result.match_fragment.clone();
 
-    // Load the full session for preview
-    let session = match crate::parser::parse_session_file(&file_path) {
-        Ok(s) => s,
-        Err(_) => {
-            app.message_line_ranges.clear();
-            return;
-        }
+    // Load the full session for preview (parsed once while the file is unchanged)
+    let Some(session) = app.load_session(&file_path) else {
+        app.message_line_ranges.clear();
+        return;
     };
+    let highlight_words = app.search_words();
 
     // Store message count for navigation
     app.preview_message_count = session.messages.len();
@@ -467,15 +582,7 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
         let is_focused = i == focused_idx;
         let is_expanded = app.expanded_messages.contains(&i);
 
-        let (accent_color, msg_bg) = match message.role {
-            Role::User => (t.user_label, t.user_bubble_bg),
-            Role::Assistant => match session.source {
-                crate::session::SessionSource::ClaudeCode => (t.claude_source, t.claude_bubble_bg),
-                crate::session::SessionSource::CodexCli => (t.codex_source, t.codex_bubble_bg),
-                crate::session::SessionSource::Factory => (t.factory_source, t.factory_bubble_bg),
-                crate::session::SessionSource::OpenCode => (t.opencode_source, t.opencode_bubble_bg),
-            },
-        };
+        let (role_label, accent_color, msg_bg) = role_style(&session, message.role);
 
         // Focus indicator - ▎ for focused, space for unfocused (same width)
         let focus_prefix = Span::styled("▎", Style::default().fg(t.focus_indicator));
@@ -485,17 +592,6 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
         if i > 0 {
             lines.push(Line::from(""));
         }
-
-        // Role label
-        let role_label = match message.role {
-            Role::User => "You",
-            Role::Assistant => match session.source {
-                crate::session::SessionSource::ClaudeCode => "Claude",
-                crate::session::SessionSource::CodexCli => "Codex",
-                crate::session::SessionSource::Factory => "Droid",
-                crate::session::SessionSource::OpenCode => "OpenCode",
-            },
-        };
 
         let time_str = format_time_ago(message.timestamp);
 
@@ -568,7 +664,7 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
             ];
 
             if !display_line.is_empty() {
-                let highlighted = highlight_matches_owned(display_line, &app.query);
+                let highlighted = highlight_matches_owned(display_line, &highlight_words);
                 for span in highlighted {
                     spans.push(Span::styled(span.content, span.style.bg(msg_bg)));
                 }
@@ -618,8 +714,8 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let label = Style::default();
     let dim = Style::default().fg(t.dim_fg);
 
-    let hints: Line = if let Some(ref msg) = app.status {
-        Line::from(Span::styled(msg, Style::default().fg(t.match_fg)))
+    let hints: Line = if let Some(msg) = app.flash_message().or(app.status.as_deref()) {
+        Line::from(Span::styled(msg.to_string(), Style::default().fg(t.match_fg)))
     } else {
         let has_selection = !app.results.is_empty();
         let mut spans = vec![
@@ -633,9 +729,16 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" Enter ", keycap),
                 Span::styled(" open ", label),
                 Span::styled(" │ ", dim),
-                Span::styled(" Tab ", keycap),
-                Span::styled(" copy ID ", label),
+                Span::styled(" ^R ", keycap),
+                Span::styled(" resume ", label),
             ]);
+            if area.width > 80 {
+                spans.extend([
+                    Span::styled(" │ ", dim),
+                    Span::styled(" Tab ", keycap),
+                    Span::styled(" copy ID ", label),
+                ]);
+            }
         }
         // Show paging hint only if terminal is wide enough and results don't fit
         if area.width > 90 && app.results.len() > app.list_page_size {
@@ -693,6 +796,230 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Paragraph::new(hints), layout[0]);
     frame.render_widget(Paragraph::new(sessions_count), layout[1]);
+}
+
+/// Widest the transcript text gets, so long lines stay readable on wide screens
+const TRANSCRIPT_MAX_WIDTH: u16 = 120;
+
+/// Label, accent colour and background colour for a message's author
+fn role_style(session: &Session, role: Role) -> (&'static str, Color, Color) {
+    let t = theme();
+    match role {
+        Role::User => ("You", t.user_label, t.user_bubble_bg),
+        Role::Assistant => match session.source {
+            SessionSource::ClaudeCode => ("Claude", t.claude_source, t.claude_bubble_bg),
+            SessionSource::CodexCli => ("Codex", t.codex_source, t.codex_bubble_bg),
+            SessionSource::Factory => ("Droid", t.factory_source, t.factory_bubble_bg),
+            SessionSource::OpenCode => ("OpenCode", t.opencode_source, t.opencode_bubble_bg),
+        },
+    }
+}
+
+/// Every message in full, as styled lines, plus the line each message starts on
+fn transcript_lines(session: &Session, width: usize, highlight: &str) -> (Vec<Line<'static>>, Vec<usize>) {
+    let t = theme();
+    let text_width = width.saturating_sub(3).max(10);
+    let count = session.messages.len();
+    let mut lines = Vec::new();
+    let mut starts = Vec::with_capacity(count);
+
+    for (i, message) in session.messages.iter().enumerate() {
+        starts.push(lines.len());
+        let (label, accent, background) = role_style(session, message.role);
+        let local_time = message.timestamp.with_timezone(&chrono::Local);
+        lines.push(Line::from(vec![
+            Span::styled("▎", Style::default().fg(accent)),
+            Span::styled(label, Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("  {}  ·  {}/{}", local_time.format("%a %b %-d %H:%M"), i + 1, count),
+                Style::default().fg(t.dim_fg),
+            ),
+        ]));
+        for text in wrap_text(&message.content, text_width) {
+            let right_pad = text_width.saturating_sub(text.chars().count());
+            let mut spans = vec![
+                Span::styled("▎", Style::default().fg(accent)),
+                Span::styled(" ", Style::default().bg(background)),
+            ];
+            for span in highlight_matches_owned(&text, highlight) {
+                spans.push(Span::styled(span.content, span.style.bg(background)));
+            }
+            spans.push(Span::styled(" ".repeat(right_pad + 1), Style::default().bg(background)));
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::raw(""));
+    }
+    (lines, starts)
+}
+
+/// Full-screen view of one conversation
+fn render_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
+    let t = theme();
+    let flash = app.flash_message().map(str::to_string);
+    let Some(transcript) = app.transcript.as_mut() else {
+        return;
+    };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2), // Title and details
+            Constraint::Length(1), // Spacing
+            Constraint::Min(0),    // Messages
+            Constraint::Length(1), // Spacing
+            Constraint::Length(1), // Status bar or search input
+        ])
+        .split(area);
+
+    // Messages column: centred, at most TRANSCRIPT_MAX_WIDTH wide, with a
+    // scrollbar at the right edge of the screen
+    let body_width = area.width.saturating_sub(4).min(TRANSCRIPT_MAX_WIDTH);
+    let body = Rect {
+        x: area.x + (area.width.saturating_sub(body_width)) / 2,
+        y: rows[2].y,
+        width: body_width,
+        height: rows[2].height,
+    };
+    let header_area = Rect { y: rows[0].y, height: rows[0].height, ..body };
+    let status_area = Rect { y: rows[4].y, height: 1, ..body };
+
+    // Header: title, then project, worktree, tool, date and session ID
+    let session = transcript.session.clone();
+    let title = session
+        .title
+        .clone()
+        .or_else(|| session.messages.first().map(|m| m.content.replace('\n', " ")))
+        .unwrap_or_else(|| "Untitled conversation".to_string());
+    let mut details = vec![
+        Span::styled(format!("📁 {}", project_name(&session.cwd)), Style::default()),
+    ];
+    if let Some(worktree) = worktree_name(&session.cwd) {
+        details.push(Span::styled(format!(" ⎇ {}", worktree), Style::default().fg(t.dim_fg)));
+    }
+    let (_, source_color, _) = role_style(&session, Role::Assistant);
+    details.extend([
+        Span::styled(
+            format!("  {} {}", session.source.icon(), session.source.display_name()),
+            Style::default().fg(source_color),
+        ),
+        Span::styled(
+            format!(
+                "  {}  ·  {} messages  ·  {}",
+                session.timestamp.with_timezone(&chrono::Local).format("%a %b %-d %Y %H:%M"),
+                session.messages.len(),
+                session.id
+            ),
+            Style::default().fg(t.dim_fg),
+        ),
+    ]);
+    let header = vec![
+        Line::styled(
+            truncate_to_width(&title, body_width as usize),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::from(details),
+    ];
+    frame.render_widget(Paragraph::new(header), header_area);
+
+    // Build lines once per width and highlight
+    transcript.height = body.height as usize;
+    let built_for = (body.width, transcript.highlight_words().to_string());
+    if transcript.lines_built_for.as_ref() != Some(&built_for) {
+        let (lines, starts) = transcript_lines(&session, body.width as usize, &built_for.1);
+        transcript.set_lines(lines, starts);
+        transcript.lines_built_for = Some(built_for);
+    }
+
+    let end = (transcript.top + body.height as usize).min(transcript.line_count());
+    let visible: Vec<Line> = transcript.lines[transcript.top..end].to_vec();
+    frame.render_widget(Paragraph::new(visible), body);
+
+    if transcript.line_count() > body.height as usize {
+        let mut state = ScrollbarState::new(transcript.line_count().saturating_sub(body.height as usize))
+            .position(transcript.top);
+        let scrollbar_area = Rect { x: area.x, width: area.width, ..rows[2] };
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(Style::default().fg(t.separator_fg))
+                .thumb_style(Style::default().fg(t.dim_fg)),
+            scrollbar_area,
+            &mut state,
+        );
+    }
+
+    // Bottom row: search input, a message, or key hints; position on the right
+    let keycap = Style::default().bg(t.keycap_bg);
+    let dim = Style::default().fg(t.dim_fg);
+    let max_top = transcript.line_count().saturating_sub(body.height as usize);
+    let percent = if max_top == 0 { 100 } else { transcript.top * 100 / max_top };
+    let mut position = format!(
+        "message {}/{}  {}%",
+        (transcript.current_message() + 1).min(session.messages.len()),
+        session.messages.len(),
+        percent
+    );
+    if !transcript.search.is_empty() {
+        let current = transcript.current_match.map(|m| m + 1).unwrap_or(0);
+        position = format!("{}/{} matches  ·  {}", current, transcript.match_lines.len(), position);
+    }
+
+    let left: Line = if let Some(input) = &transcript.search_input {
+        Line::from(vec![
+            Span::styled("/", Style::default().fg(t.accent)),
+            Span::raw(input.clone()),
+            Span::styled(" ", Style::default().bg(t.accent)),
+            Span::styled("   Enter search · Esc cancel", dim),
+        ])
+    } else if let Some(message) = flash {
+        Line::styled(message, Style::default().fg(t.match_fg))
+    } else {
+        let mut spans = Vec::new();
+        let hints: &[(&str, &str)] = &[
+            // Most useful first: the ones that don't fit are dropped
+            ("q", "back"),
+            ("?", "help"),
+            ("j/k", "scroll"),
+            ("d/u", "half page"),
+            ("g/G", "top/bottom"),
+            ("]/[", "message"),
+            ("/", "search"),
+            ("Enter", "resume"),
+        ];
+        let room = (status_area.width as usize).saturating_sub(position.chars().count() + 2);
+        let mut used = 0;
+        for (key, action) in hints {
+            let piece = key.chars().count() + action.chars().count() + 6;
+            if used + piece > room {
+                break;
+            }
+            if !spans.is_empty() {
+                spans.push(Span::styled(" │ ", dim));
+            }
+            spans.push(Span::styled(format!(" {} ", key), keycap));
+            spans.push(Span::raw(format!(" {}", action)));
+            used += piece;
+        }
+        Line::from(spans)
+    };
+
+    let status = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(position.chars().count() as u16)])
+        .split(status_area);
+    frame.render_widget(Paragraph::new(left), status[0]);
+    frame.render_widget(Paragraph::new(Span::styled(position, dim)), status[1]);
+}
+
+/// Cut text to `width` characters, ending in "…" when cut
+fn truncate_to_width(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(width.saturating_sub(1)).collect();
+    cut.push('…');
+    cut
 }
 
 /// Find the wrapped line index that contains the given fragment.
@@ -984,6 +1311,38 @@ fn select_lines_to_show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_split_sections_keeps_order_and_all_sections() {
+        for count in 1..=3 {
+            let columns = split_sections(SHORTCUTS, count);
+            let names: Vec<&str> = columns.iter().flat_map(|c| c.iter().map(|(n, _)| *n)).collect();
+            let expected: Vec<&str> = SHORTCUTS.iter().map(|(n, _)| *n).collect();
+            assert_eq!(names, expected);
+            assert!(columns.len() <= count);
+        }
+    }
+
+    #[test]
+    fn test_split_sections_balances_heights() {
+        let entries: &[(&str, &str)] = &[("k", "a"); 4];
+        let long: &[(&str, &str)] = &[("k", "a"); 12];
+        let sections: &[(&str, &[(&str, &str)])] =
+            &[("A", entries), ("B", entries), ("C", long), ("D", entries)];
+
+        let columns = split_sections(sections, 2);
+
+        // A+B = 11 lines, C+D = 19 lines; A+B+C = 25 lines would be worse
+        let names: Vec<Vec<&str>> =
+            columns.iter().map(|c| c.iter().map(|(n, _)| *n).collect()).collect();
+        assert_eq!(names, vec![vec!["A", "B"], vec!["C", "D"]]);
+    }
+
+    #[test]
+    fn test_truncate_to_width() {
+        assert_eq!(truncate_to_width("short", 10), "short");
+        assert_eq!(truncate_to_width("a longer title", 8), "a longe…");
+    }
 
     #[test]
     fn test_wrap_text_short_line() {

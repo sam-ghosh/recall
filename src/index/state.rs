@@ -9,6 +9,9 @@ use std::time::SystemTime;
 pub struct IndexState {
     pub indexed_files: HashMap<PathBuf, FileState>,
     pub version: u32,
+    /// `Config::indexing_fingerprint` the indexed files were indexed with
+    #[serde(default)]
+    pub config_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +35,7 @@ impl IndexState {
             Ok(Self {
                 indexed_files: HashMap::new(),
                 version: Self::CURRENT_VERSION,
+                config_fingerprint: String::new(),
             })
         }
     }

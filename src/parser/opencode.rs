@@ -16,7 +16,6 @@ struct OpenCodeSession {
     #[allow(dead_code)]
     project_id: Option<String>,
     directory: Option<String>,
-    #[allow(dead_code)]
     title: Option<String>,
     time: Option<TimeInfo>,
 }
@@ -159,6 +158,7 @@ impl SessionParser for OpenCodeParser {
             file_path: path.to_path_buf(),
             cwd: cwd.unwrap_or_else(|| ".".to_string()),
             git_branch: None, // OpenCode doesn't store git branch in session metadata
+            title: session.title.clone().filter(|t| !t.trim().is_empty()),
             timestamp: latest_timestamp.unwrap_or_else(|| {
                 session
                     .time

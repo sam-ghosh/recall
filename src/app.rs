@@ -2,22 +2,46 @@ use crate::index::{
     discover_and_sort_files, index_files, plan_update, IndexProgress, IndexState, SearchFilter,
     SessionIndex,
 };
+use crate::config::Config;
 use crate::parser;
 use crate::project::project_root;
-use crate::session::{SearchResult, Session};
+use crate::session::{SearchResult, Session, SessionSource};
+use crate::time::split_query_dates;
+use crate::transcript::{Transcript, TranscriptAction};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Debounce delay for search (avoid searching on every keystroke during fast typing/paste)
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(50);
 
 /// How many sessions the list shows at most
 const RESULT_LIMIT: usize = 200;
+
+/// How long a status bar message (e.g. "Copied session ID") stays
+const FLASH_DURATION: Duration = Duration::from_secs(3);
+
+/// Order Ctrl+S steps through the tool filter (None = all tools)
+const SOURCE_FILTER_ORDER: &[Option<SessionSource>] = &[
+    None,
+    Some(SessionSource::ClaudeCode),
+    Some(SessionSource::CodexCli),
+    Some(SessionSource::Factory),
+    Some(SessionSource::OpenCode),
+];
+
+/// A parsed session file, kept until the file changes
+struct ParsedSession {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    len: u64,
+    session: Arc<Session>,
+}
 
 /// Messages from the indexing thread
 pub enum IndexMsg {
@@ -68,12 +92,22 @@ pub struct App {
     pub preview_scrollable: bool,
     /// Whether the keyboard shortcuts panel is open
     pub show_help: bool,
+    /// Lines the shortcuts panel is scrolled down by
+    pub help_scroll: usize,
+    /// Full-screen view of the selected conversation, when open
+    pub transcript: Option<Transcript>,
     /// Should quit
     pub should_quit: bool,
-    /// Should execute resume (set on Enter)
+    /// Should execute resume (set on Ctrl+R, or Enter in the transcript view)
     pub should_resume: Option<Session>,
-    /// Session ID to copy (set on Tab)
-    pub should_copy: Option<String>,
+    /// Text for the main loop to copy, and what to call it in the status bar
+    pub pending_copy: Option<(String, &'static str)>,
+    /// Short status bar message and when it was set
+    flash: Option<(String, Instant)>,
+    /// Only show sessions from this tool (None = all)
+    pub source_filter: Option<SessionSource>,
+    /// Last session file parsed for the preview
+    parsed_session: Option<ParsedSession>,
     /// Index for searching
     index: SessionIndex,
     /// Status message (for indexing progress, etc.)
@@ -145,9 +179,14 @@ impl App {
             pending_auto_scroll: false,
             preview_scrollable: false,
             show_help: false,
+            help_scroll: 0,
+            transcript: None,
             should_quit: false,
             should_resume: None,
-            should_copy: None,
+            pending_copy: None,
+            flash: None,
+            source_filter: None,
+            parsed_session: None,
             index,
             status: None,
             total_sessions: 0,
@@ -246,18 +285,21 @@ impl App {
         // Remember currently selected session to preserve selection
         let selected_session_id = self.results.get(self.selected).map(|r| r.session.id.clone());
 
+        let dates = split_query_dates(&self.query);
         let filter = SearchFilter {
             project: match &self.search_scope {
                 SearchScope::Project(root) => Some(root.clone()),
                 SearchScope::Everything => None,
             },
-            ..Default::default()
+            source: self.source_filter,
+            since: dates.since,
+            until: dates.until,
         };
 
-        self.results = if self.query.is_empty() {
+        self.results = if dates.text.is_empty() {
             self.index.recent(RESULT_LIMIT, &filter)?
         } else {
-            self.index.search(&self.query, RESULT_LIMIT, &filter)?
+            self.index.search(&dates.text, RESULT_LIMIT, &filter)?
         };
 
         // Try to preserve selection on the same session
@@ -286,6 +328,114 @@ impl App {
             SearchScope::Project(_) => SearchScope::Everything,
         };
         let _ = self.search();
+    }
+
+    /// Step the tool filter: all → Claude → Codex → Factory → OpenCode → all
+    pub fn cycle_source_filter(&mut self) {
+        let position = SOURCE_FILTER_ORDER
+            .iter()
+            .position(|s| *s == self.source_filter)
+            .unwrap_or(0);
+        self.source_filter = SOURCE_FILTER_ORDER[(position + 1) % SOURCE_FILTER_ORDER.len()];
+        let _ = self.search();
+    }
+
+    /// The search box text without date words (`since:2w`), for highlighting
+    pub fn search_words(&self) -> String {
+        split_query_dates(&self.query).text
+    }
+
+    /// Show a short message in the status bar
+    pub fn set_flash(&mut self, message: impl Into<String>) {
+        self.flash = Some((message.into(), Instant::now()));
+    }
+
+    /// The status bar message, while it is recent
+    pub fn flash_message(&self) -> Option<&str> {
+        self.flash
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < FLASH_DURATION)
+            .map(|(message, _)| message.as_str())
+    }
+
+    /// Parse a session file, reusing the last result while the file is unchanged
+    pub fn load_session(&mut self, path: &Path) -> Option<Arc<Session>> {
+        let metadata = std::fs::metadata(path).ok();
+        let modified = metadata.as_ref().and_then(|m| m.modified().ok());
+        let len = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        if let Some(parsed) = &self.parsed_session {
+            if parsed.path == path && parsed.modified == modified && parsed.len == len {
+                return Some(parsed.session.clone());
+            }
+        }
+        let session = Arc::new(parser::parse_session_file(path).ok()?);
+        self.parsed_session = Some(ParsedSession {
+            path: path.to_path_buf(),
+            modified,
+            len,
+            session: session.clone(),
+        });
+        Some(session)
+    }
+
+    /// Open the selected conversation full screen, at the matched message when searching
+    pub fn open_transcript(&mut self) {
+        let Some(result) = self.results.get(self.selected) else {
+            return;
+        };
+        let path = result.session.file_path.clone();
+        let matched = result.matched_message_index;
+        let words = self.search_words();
+        match self.load_session(&path) {
+            Some(session) => {
+                let open_at = (!words.is_empty()).then_some(matched);
+                self.transcript = Some(Transcript::new(session, words, open_at));
+            }
+            None => self.set_flash("Could not read this session file"),
+        }
+    }
+
+    /// The session shown in the transcript view, or else the selected one
+    fn current_session(&self) -> Option<Session> {
+        match &self.transcript {
+            Some(transcript) => Some((*transcript.session).clone()),
+            None => self.results.get(self.selected).map(|r| r.session.clone()),
+        }
+    }
+
+    fn copy_session_id(&mut self) {
+        if let Some(session) = self.current_session() {
+            self.pending_copy = Some((session.id, "session ID"));
+        }
+    }
+
+    fn copy_resume_command(&mut self) {
+        if let Some(session) = self.current_session() {
+            self.pending_copy = Some((session.resume_shell_command(), "resume command"));
+        }
+    }
+
+    fn on_transcript_key(&mut self, key: KeyEvent) {
+        let Some(transcript) = self.transcript.as_mut() else {
+            return;
+        };
+        match transcript.on_key(key) {
+            TranscriptAction::None => {}
+            TranscriptAction::Close => self.transcript = None,
+            TranscriptAction::Quit => self.should_quit = true,
+            TranscriptAction::Resume => {
+                self.should_resume = Some((*transcript.session).clone());
+            }
+            TranscriptAction::CopySessionId => self.copy_session_id(),
+            TranscriptAction::CopyResumeCommand => self.copy_resume_command(),
+            TranscriptAction::ShowHelp => self.open_help(),
+            TranscriptAction::NotFound(search) => self.set_flash(format!("Not found: {}", search)),
+        }
+    }
+
+    fn open_help(&mut self) {
+        self.show_help = true;
+        self.help_scroll = 0;
     }
 
     /// Get the folder name for display (last component of path)
@@ -341,22 +491,36 @@ impl App {
         }
 
         if self.show_help {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Enter | KeyCode::F(1) | KeyCode::Char('?') | KeyCode::Char('q')
-            ) {
-                self.show_help = false;
+            match key.code {
+                KeyCode::Esc
+                | KeyCode::Enter
+                | KeyCode::F(1)
+                | KeyCode::Char('?')
+                | KeyCode::Char('q') => self.show_help = false,
+                KeyCode::Down | KeyCode::Char('j') => self.help_scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1)
+                }
+                _ => {}
             }
             return;
         }
 
+        if self.transcript.is_some() {
+            self.on_transcript_key(key);
+            return;
+        }
+
         match key.code {
-            KeyCode::F(1) => self.show_help = true,
+            KeyCode::F(1) => self.open_help(),
             // With text in the search box, '?' is typed as part of the search
-            KeyCode::Char('?') if self.query.is_empty() => self.show_help = true,
+            KeyCode::Char('?') if self.query.is_empty() => self.open_help(),
             KeyCode::Esc => self.on_escape(),
-            KeyCode::Enter => self.on_enter(),
-            KeyCode::Tab => self.on_tab(),
+            KeyCode::Enter => self.open_transcript(),
+            KeyCode::Char('r') if ctrl => self.on_resume(),
+            KeyCode::Tab => self.copy_session_id(),
+            KeyCode::Char('y') if ctrl => self.copy_resume_command(),
+            KeyCode::Char('s') if ctrl => self.cycle_source_filter(),
             KeyCode::Char('d') if ctrl => self.on_half_page_down(),
             KeyCode::Char('u') if ctrl => self.on_half_page_up(),
             KeyCode::Char('a') if ctrl => self.on_home(),
@@ -529,19 +693,15 @@ impl App {
         }
     }
 
-    /// Handle Tab key - copy session ID
-    pub fn on_tab(&mut self) {
-        if let Some(result) = self.results.get(self.selected) {
-            self.should_copy = Some(result.session.id.clone());
-        }
-    }
-
-    /// Handle Enter key - open conversation
-    pub fn on_enter(&mut self) {
-        if let Some(result) = self.results.get(self.selected) {
-            if let Ok(session) = parser::parse_session_file(&result.session.file_path) {
-                self.should_resume = Some(session);
-            }
+    /// Resume the selected conversation
+    pub fn on_resume(&mut self) {
+        let Some(path) = self.results.get(self.selected).map(|r| r.session.file_path.clone())
+        else {
+            return;
+        };
+        match self.load_session(&path) {
+            Some(session) => self.should_resume = Some((*session).clone()),
+            None => self.set_flash("Could not read this session file"),
         }
     }
 
@@ -663,9 +823,10 @@ fn background_index(index_path: PathBuf, state_path: PathBuf, tx: Sender<IndexMs
     };
 
     // Discover and sort files by mtime (most recent first)
-    let files = discover_and_sort_files();
+    let config = Config::load();
+    let files = discover_and_sort_files(&config);
 
-    let update = plan_update(&state, &files);
+    let update = plan_update(&state, &files, &config);
 
     if update.is_empty() {
         let _ = tx.send(IndexMsg::Done {
@@ -701,6 +862,7 @@ fn background_index(index_path: PathBuf, state_path: PathBuf, tx: Sender<IndexMs
         &index,
         &mut writer,
         &mut state,
+        &config,
         &update,
         Some(on_progress),
         Some(on_reload),
@@ -746,9 +908,14 @@ mod tests {
             pending_auto_scroll: false,
             preview_scrollable: false,
             show_help: false,
+            help_scroll: 0,
+            transcript: None,
             should_quit: false,
             should_resume: None,
-            should_copy: None,
+            pending_copy: None,
+            flash: None,
+            source_filter: None,
+            parsed_session: None,
             index: SessionIndex::open_or_create(&index_path).unwrap(),
             status: None,
             total_sessions: 0,
@@ -994,6 +1161,7 @@ mod tests {
                     file_path: PathBuf::new(),
                     cwd: String::new(),
                     git_branch: None,
+                    title: None,
                     timestamp: chrono::Utc::now(),
                     messages: Vec::new(),
                 },
@@ -1120,6 +1288,135 @@ mod tests {
 
         assert_eq!(app.query, "");
         assert!(app.should_resume.is_none());
+    }
+
+    // ==================== transcript view and copy keys ====================
+
+    /// App with one result backed by a real session file
+    fn app_with_session_file() -> (App, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let folder = dir.path().join(".claude").join("projects").join("-p-xenia");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("abc.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"user","sessionId":"abc","cwd":"/p/xenia","timestamp":"2026-01-01T10:00:00Z","message":{"role":"user","content":"deploy the app"}}"#,
+                "\n",
+                r#"{"type":"assistant","sessionId":"abc","cwd":"/p/xenia","timestamp":"2026-01-01T10:01:00Z","message":{"role":"assistant","content":[{"type":"text","text":"Deployed."}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let mut app = app_with_results(1);
+        app.results[0].session.file_path = path;
+        app.results[0].session.cwd = "/p/xenia".to_string();
+        (app, dir)
+    }
+
+    #[test]
+    fn test_enter_opens_transcript_and_q_closes_it() {
+        let (mut app, _dir) = app_with_session_file();
+
+        press(&mut app, KeyCode::Enter);
+
+        let transcript = app.transcript.as_ref().expect("transcript open");
+        assert_eq!(transcript.session.messages.len(), 2);
+        assert!(app.should_resume.is_none());
+
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.transcript.is_none());
+        assert!(!app.should_quit);
+        assert_eq!(app.query, "", "q is not typed into the search box");
+    }
+
+    #[test]
+    fn test_enter_in_transcript_resumes() {
+        let (mut app, _dir) = app_with_session_file();
+        press(&mut app, KeyCode::Enter);
+
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.should_resume.as_ref().map(|s| s.messages.len()), Some(2));
+    }
+
+    #[test]
+    fn test_ctrl_r_resumes_from_list() {
+        let (mut app, _dir) = app_with_session_file();
+
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+
+        assert!(app.should_resume.is_some());
+        assert!(app.transcript.is_none());
+    }
+
+    #[test]
+    fn test_tab_and_ctrl_y_copy_without_quitting() {
+        let mut app = app_with_results(3);
+        app.results[0].session.cwd = "/p/xenia".to_string();
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.pending_copy, Some(("s0".to_string(), "session ID")));
+        assert!(!app.should_quit);
+
+        app.on_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        let (text, what) = app.pending_copy.clone().unwrap();
+        assert_eq!(what, "resume command");
+        assert!(text.starts_with("cd /p/xenia && "), "{}", text);
+        assert!(text.ends_with(" s0"), "{}", text);
+    }
+
+    #[test]
+    fn test_help_from_transcript_returns_to_transcript() {
+        let (mut app, _dir) = app_with_session_file();
+        press(&mut app, KeyCode::Enter);
+
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.show_help);
+        press(&mut app, KeyCode::Esc);
+
+        assert!(!app.show_help);
+        assert!(app.transcript.is_some());
+    }
+
+    #[test]
+    fn test_ctrl_s_cycles_source_filter() {
+        let mut app = test_app();
+        let ctrl_s = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+
+        app.on_key(ctrl_s);
+        assert_eq!(app.source_filter, Some(SessionSource::ClaudeCode));
+        app.on_key(ctrl_s);
+        assert_eq!(app.source_filter, Some(SessionSource::CodexCli));
+        for _ in 0..3 {
+            app.on_key(ctrl_s);
+        }
+        assert_eq!(app.source_filter, None);
+    }
+
+    #[test]
+    fn test_search_words_leave_out_dates() {
+        let mut app = test_app();
+        app.query = "deploy since:2w".to_string();
+
+        assert_eq!(app.search_words(), "deploy");
+    }
+
+    #[test]
+    fn test_parsed_session_reused_until_file_changes() {
+        let (mut app, _dir) = app_with_session_file();
+        let path = app.results[0].session.file_path.clone();
+
+        let first = app.load_session(&path).unwrap();
+        let second = app.load_session(&path).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(r#"{"type":"user","sessionId":"abc","cwd":"/p/xenia","timestamp":"2026-01-01T10:02:00Z","message":{"role":"user","content":"thanks"}}"#);
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+
+        assert_eq!(app.load_session(&path).unwrap().messages.len(), 3);
     }
 
     // ==================== State reset tests ====================

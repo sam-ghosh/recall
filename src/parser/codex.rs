@@ -152,7 +152,10 @@ impl SessionParser for CodexParser {
                 .to_string()
         });
 
+        let title = thread_name(path, &session_id);
+
         Ok(Session {
+            title,
             id: session_id,
             source: SessionSource::CodexCli,
             file_path: path.to_path_buf(),
@@ -201,6 +204,28 @@ fn extract_codex_content(item: &ResponseItem) -> String {
         }
     }
     texts.join("\n")
+}
+
+/// Thread name for a Codex session, from `<codex home>/session_index.jsonl`
+/// (one `{"id", "thread_name", "updated_at"}` line per rename; the last one wins)
+fn thread_name(session_path: &Path, session_id: &str) -> Option<String> {
+    let path_str = session_path.to_str()?;
+    let codex_home = &path_str[..path_str.find("/.codex/")? + "/.codex".len()];
+    let index = std::fs::read_to_string(Path::new(codex_home).join("session_index.jsonl")).ok()?;
+
+    #[derive(Deserialize)]
+    struct IndexLine {
+        id: String,
+        thread_name: Option<String>,
+    }
+
+    index
+        .lines()
+        .filter_map(|line| serde_json::from_str::<IndexLine>(line).ok())
+        .filter(|entry| entry.id == session_id)
+        .filter_map(|entry| entry.thread_name)
+        .filter(|name| !name.trim().is_empty())
+        .last()
 }
 
 #[cfg(test)]

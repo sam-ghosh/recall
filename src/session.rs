@@ -83,17 +83,28 @@ pub struct Session {
     pub file_path: PathBuf,
     pub cwd: String,
     pub git_branch: Option<String>,
+    /// Name given to the conversation (Claude Code `/rename` or its generated
+    /// title, Codex thread name, OpenCode/Factory title)
+    pub title: Option<String>,
     pub timestamp: DateTime<Utc>,
     pub messages: Vec<Message>,
 }
 
 impl Session {
-    /// Get the project name from cwd (last path component)
-    pub fn project_name(&self) -> &str {
-        std::path::Path::new(&self.cwd)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&self.cwd)
+    /// The resume command as one line to paste into a shell, starting in the
+    /// session's folder: `cd '/p/xenia' && claude --resume <id>`
+    pub fn resume_shell_command(&self) -> String {
+        let (program, args) = self.resume_command();
+        let command = std::iter::once(program)
+            .chain(args)
+            .map(|part| shell_quote(&part))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if self.cwd.is_empty() {
+            command
+        } else {
+            format!("cd {} && {}", shell_quote(&self.cwd), command)
+        }
     }
 
     /// Get the resume command for this session
@@ -137,6 +148,19 @@ impl Session {
                 vec!["--session".to_string(), self.id.clone()],
             ),
         }
+    }
+}
+
+/// Quote a word for a POSIX shell when it contains anything beyond plain characters
+fn shell_quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
     }
 }
 
@@ -237,5 +261,28 @@ impl Session {
             timestamp: self.timestamp,
             resume_command: resume_str,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resume_shell_command_quotes_folder() {
+        let session = Session {
+            id: "abc-123".to_string(),
+            source: SessionSource::ClaudeCode,
+            file_path: PathBuf::new(),
+            cwd: "/Users/me/My Project's".to_string(),
+            git_branch: None,
+            title: None,
+            timestamp: Utc::now(),
+            messages: Vec::new(),
+        };
+        // The program part can come from RECALL_CLAUDE_CMD, so check the ends only
+        let command = session.resume_shell_command();
+        assert!(command.starts_with("cd '/Users/me/My Project'\\''s' && "), "{}", command);
+        assert!(command.ends_with(" abc-123"), "{}", command);
     }
 }

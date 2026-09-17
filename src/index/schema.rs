@@ -16,7 +16,7 @@ use tantivy::{doc, DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Se
 
 /// Bump when the schema or what gets indexed changes. An index written with a
 /// different version is deleted and rebuilt on open.
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const SCHEMA_VERSION_FILE: &str = "recall-schema-version";
 
 /// `record_type` values: one record per message (searched) and one per session
@@ -70,6 +70,7 @@ pub struct SessionIndex {
     cwd: Field,
     project_root: Field,
     git_branch: Field,
+    title: Field,
     timestamp: Field,
     record_type: Field,
     content: Field,
@@ -127,6 +128,7 @@ impl SessionIndex {
             cwd: schema.get_field("cwd").unwrap(),
             project_root: schema.get_field("project_root").unwrap(),
             git_branch: schema.get_field("git_branch").unwrap(),
+            title: schema.get_field("title").unwrap(),
             timestamp: schema.get_field("timestamp").unwrap(),
             record_type: schema.get_field("record_type").unwrap(),
             content: schema.get_field("content").unwrap(),
@@ -146,6 +148,7 @@ impl SessionIndex {
         builder.add_text_field("cwd", STRING | STORED);
         builder.add_text_field("project_root", STRING | STORED);
         builder.add_text_field("git_branch", STRING | STORED);
+        builder.add_text_field("title", STORED);
 
         // Timestamp for recency sorting (stored as i64 unix timestamp)
         builder.add_i64_field("timestamp", INDEXED | STORED | FAST);
@@ -156,7 +159,7 @@ impl SessionIndex {
         // Message index within the session (for match-recency)
         builder.add_u64_field("message_index", STORED);
 
-        // Searchable message text (message records only)
+        // Searchable text: the message (message records) or the title (session records)
         builder.add_text_field("content", TEXT | STORED);
 
         // Text shown for a session in the recent list (session records only)
@@ -178,6 +181,7 @@ impl SessionIndex {
         let project = project_root(&session.cwd);
         let file_path = session.file_path.to_string_lossy().to_string();
         let git_branch = session.git_branch.clone().unwrap_or_default();
+        let title = session.title.clone().unwrap_or_default();
 
         // Index each message separately for match-recency ranking
         for (idx, message) in session.messages.iter().enumerate() {
@@ -188,6 +192,7 @@ impl SessionIndex {
                 self.cwd => session.cwd.clone(),
                 self.project_root => project.clone(),
                 self.git_branch => git_branch.clone(),
+                self.title => title.clone(),
                 self.timestamp => timestamp_secs,
                 self.record_type => RECORD_MESSAGE,
                 self.message_index => idx as u64,
@@ -202,9 +207,11 @@ impl SessionIndex {
             self.cwd => session.cwd.clone(),
             self.project_root => project,
             self.git_branch => git_branch,
+            self.title => title.clone(),
             self.timestamp => timestamp_secs,
             self.record_type => RECORD_SESSION,
             self.message_index => 0u64,
+            self.content => title,
             self.preview => session_preview(session),
         ))?;
 
@@ -571,6 +578,7 @@ impl SessionIndex {
             file_path: PathBuf::from(self.text(doc, self.file_path)),
             cwd: self.text(doc, self.cwd).to_string(),
             git_branch: Some(self.text(doc, self.git_branch).to_string()).filter(|s| !s.is_empty()),
+            title: Some(self.text(doc, self.title).to_string()).filter(|s| !s.is_empty()),
             timestamp: DateTime::from_timestamp(timestamp_secs, 0).unwrap_or_default(),
             messages: Vec::new(),
         }
@@ -616,6 +624,7 @@ mod tests {
             file_path: PathBuf::from(format!("/sessions/{}.jsonl", id)),
             cwd: cwd.to_string(),
             git_branch: None,
+            title: None,
             timestamp,
             messages: messages
                 .iter()
@@ -827,6 +836,22 @@ mod tests {
             ..Default::default()
         };
         assert!(index.recent(10, &codex).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_title_is_stored_and_searchable() {
+        let mut titled = session("a", "/p/x", 1, &["hello", "hi"]);
+        titled.title = Some("Calendar sync K-7".to_string());
+        let (_dir, index) = index_with(&[titled, session("b", "/p/x", 1, &["hello"])]);
+
+        let recent = index.recent(10, &SearchFilter::default()).unwrap();
+        let a = recent.iter().find(|r| r.session.id == "a").unwrap();
+        assert_eq!(a.session.title.as_deref(), Some("Calendar sync K-7"));
+        assert_eq!(a.snippet, "hello");
+
+        let found = index.search("calend", 10, &SearchFilter::default()).unwrap();
+        assert_eq!(ids(&found), vec!["a"]);
+        assert_eq!(found[0].session.title.as_deref(), Some("Calendar sync K-7"));
     }
 
     #[test]

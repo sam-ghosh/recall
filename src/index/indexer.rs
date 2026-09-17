@@ -2,6 +2,7 @@
 
 use super::state::IndexState;
 use super::SessionIndex;
+use crate::config::Config;
 use crate::parser;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -21,8 +22,8 @@ pub type ProgressCallback = Box<dyn FnMut(IndexProgress) + Send>;
 pub type ReloadCallback = Box<dyn FnMut() + Send>;
 
 /// Discovers session files and sorts them by modification time (most recent first)
-pub fn discover_and_sort_files() -> Vec<PathBuf> {
-    let mut files = parser::discover_session_files();
+pub fn discover_and_sort_files(config: &Config) -> Vec<PathBuf> {
+    let mut files = parser::discover_session_files(config);
     files.sort_by(|a, b| {
         let mtime_a = std::fs::metadata(a)
             .and_then(|m| m.modified())
@@ -49,13 +50,15 @@ impl IndexUpdate {
     }
 }
 
-/// Compare discovered files with what the index already holds
-pub fn plan_update(state: &IndexState, discovered: &[PathBuf]) -> IndexUpdate {
+/// Compare discovered files with what the index already holds. When the
+/// config's indexing settings changed, every discovered file is indexed again.
+pub fn plan_update(state: &IndexState, discovered: &[PathBuf], config: &Config) -> IndexUpdate {
     let discovered_set: HashSet<&PathBuf> = discovered.iter().collect();
+    let config_changed = state.config_fingerprint != config.indexing_fingerprint();
     IndexUpdate {
         to_index: discovered
             .iter()
-            .filter(|f| state.needs_reindex(f))
+            .filter(|f| config_changed || state.needs_reindex(f))
             .cloned()
             .collect(),
         to_remove: state
@@ -77,6 +80,7 @@ pub fn index_files(
     index: &SessionIndex,
     writer: &mut IndexWriter,
     state: &mut IndexState,
+    config: &Config,
     update: &IndexUpdate,
     mut on_progress: Option<ProgressCallback>,
     mut on_reload: Option<ReloadCallback>,
@@ -97,7 +101,7 @@ pub fn index_files(
         // Parse and index
         match parser::parse_session_file(file_path) {
             Ok(session) => {
-                if !session.messages.is_empty() {
+                if !session.messages.is_empty() && !config.should_skip_session(&session) {
                     let _ = index.index_session(writer, &session);
                 }
                 // Mark as indexed even if empty (so we don't reprocess it)
@@ -130,6 +134,7 @@ pub fn index_files(
     }
 
     // Final commit
+    state.config_fingerprint = config.indexing_fingerprint();
     writer.commit()?;
 
     Ok(indexed)
@@ -152,9 +157,27 @@ mod tests {
         state.mark_indexed(&kept);
         state.mark_indexed(&gone);
 
-        let update = plan_update(&state, &[kept.clone(), new.clone()]);
+        state.config_fingerprint = Config::default().indexing_fingerprint();
+
+        let update = plan_update(&state, &[kept.clone(), new.clone()], &Config::default());
 
         assert_eq!(update.to_index, vec![new]);
         assert_eq!(update.to_remove, vec![gone]);
+    }
+
+    #[test]
+    fn test_plan_update_reindexes_everything_when_config_changes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("a.jsonl");
+        std::fs::write(&file, "{}").unwrap();
+        let mut state = IndexState::default();
+        state.mark_indexed(&file);
+        state.config_fingerprint = Config::default().indexing_fingerprint();
+        let mut config = Config::default();
+        config.skip_sessions_starting_with = vec!["[cron]".to_string()];
+
+        let update = plan_update(&state, &[file.clone()], &config);
+
+        assert_eq!(update.to_index, vec![file]);
     }
 }

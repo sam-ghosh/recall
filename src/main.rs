@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use crossterm::event::{self, Event, KeyEventKind, MouseEventKind};
-use recall::{app::App, session, session::SessionSource, tui, ui};
+use recall::{app::App, clipboard, session, session::SessionSource, tui, ui};
 use std::time::Duration;
 
 mod cli;
@@ -171,9 +171,6 @@ fn run_tui(initial_query: String) -> Result<()> {
     // Handle post-exit actions
     if let Some(session) = app.should_resume {
         resume_session(&session)?;
-    } else if let Some(session_id) = app.should_copy {
-        copy_to_clipboard(&session_id)?;
-        println!("Copied session ID: {}", session_id);
     }
 
     result
@@ -195,7 +192,7 @@ fn run(terminal: &mut tui::Tui, app: &mut App) -> Result<()> {
         terminal.draw(|frame| ui::render(frame, app))?;
 
         // Check for exit conditions
-        if app.should_quit || app.should_resume.is_some() || app.should_copy.is_some() {
+        if app.should_quit || app.should_resume.is_some() {
             break;
         }
 
@@ -204,7 +201,24 @@ fn run(terminal: &mut tui::Tui, app: &mut App) -> Result<()> {
             match event::read()? {
                 // On Windows, crossterm sends both Press and Release events.
                 // Only handle Press to avoid double input.
-                Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.on_key(key);
+                    if let Some((text, what)) = app.pending_copy.take() {
+                        match clipboard::copy(&text) {
+                            Ok(()) => app.set_flash(format!("Copied {}: {}", what, text)),
+                            Err(e) => app.set_flash(format!("Could not copy {}: {}", what, e)),
+                        }
+                    }
+                }
+                Event::Mouse(mouse) if app.transcript.is_some() => {
+                    if let Some(transcript) = app.transcript.as_mut() {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => transcript.scroll_by(-3),
+                            MouseEventKind::ScrollDown => transcript.scroll_by(3),
+                            _ => {}
+                        }
+                    }
+                }
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => app.scroll_preview_up(3),
                     MouseEventKind::ScrollDown => app.scroll_preview_down(3),
@@ -275,14 +289,6 @@ fn resume_session(session: &session::Session) -> Result<()> {
         .args(&args)
         .status()?;
 
-    Ok(())
-}
-
-/// Copy session ID to clipboard
-fn copy_to_clipboard(text: &str) -> Result<()> {
-    use arboard::Clipboard;
-    let mut clipboard = Clipboard::new()?;
-    clipboard.set_text(text)?;
     Ok(())
 }
 

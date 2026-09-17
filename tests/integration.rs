@@ -118,7 +118,7 @@ fn test_discovers_claude_sessions() {
     let temp_dir = setup_test_env();
     std::env::set_var("RECALL_HOME_OVERRIDE", temp_dir.path());
 
-    let files = recall::parser::discover_session_files();
+    let files = recall::parser::discover_session_files(&recall::config::Config::load());
 
     std::env::remove_var("RECALL_HOME_OVERRIDE");
 
@@ -135,7 +135,7 @@ fn test_discovers_codex_sessions() {
     let temp_dir = setup_test_env();
     std::env::set_var("RECALL_HOME_OVERRIDE", temp_dir.path());
 
-    let files = recall::parser::discover_session_files();
+    let files = recall::parser::discover_session_files(&recall::config::Config::load());
 
     std::env::remove_var("RECALL_HOME_OVERRIDE");
 
@@ -474,18 +474,80 @@ fn test_help_panel_lists_shortcuts() {
         crossterm::event::KeyModifiers::NONE,
     ));
 
-    for (width, height) in [(120, 30), (80, 40)] {
+    // Three columns, two columns, and one column that has to scroll
+    for (width, height) in [(170, 30), (120, 34), (80, 30)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        terminal.draw(|f| recall::ui::render(f, &mut app)).unwrap();
-        assert!(buffer_contains(&terminal, "Keyboard shortcuts"));
+        let mut seen = String::new();
+        for _ in 0..60 {
+            terminal.draw(|f| recall::ui::render(f, &mut app)).unwrap();
+            assert!(buffer_contains(&terminal, "Keyboard shortcuts"));
+            seen.push_str(&buffer_to_string(&terminal));
+            app.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
         for (_, entries) in recall::ui::SHORTCUTS {
-            for (key, _) in entries.iter() {
-                assert!(buffer_contains(&terminal, key), "missing {} at {}x{}", key, width, height);
+            for (key, action) in entries.iter() {
+                assert!(seen.contains(key), "missing {} at {}x{}", key, width, height);
+                assert!(seen.contains(action), "missing {} at {}x{}", action, width, height);
             }
         }
+        app.help_scroll = 0;
     }
 
+    // Wide enough for three columns: everything fits without scrolling
+    let mut terminal = Terminal::new(TestBackend::new(170, 30)).unwrap();
+    terminal.draw(|f| recall::ui::render(f, &mut app)).unwrap();
+    assert!(buffer_contains(&terminal, "Esc or ? to close"));
+    assert!(!buffer_contains(&terminal, "scroll ·"));
+
     cleanup_ui_test();
+}
+
+#[test]
+fn test_enter_opens_transcript_view() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let _lock = lock_test();
+    let _temp_dir = setup_ui_test();
+
+    let mut app = recall::App::new(String::new()).unwrap();
+    wait_for_indexing(&mut app, 100);
+    app.toggle_scope();
+    for c in "hello".chars() {
+        app.on_char(c);
+    }
+    app.flush_pending_search();
+    let position = app
+        .results
+        .iter()
+        .position(|r| r.session.id == "test-claude-123")
+        .expect("fixture session found");
+    app.selected = position;
+
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    terminal.draw(|f| recall::ui::render(f, &mut app)).unwrap();
+
+    assert!(app.transcript.is_some());
+    assert!(buffer_contains(&terminal, "test-claude-123"), "header shows session ID");
+    assert!(buffer_contains(&terminal, "You"));
+    assert!(buffer_contains(&terminal, "message 1/"));
+    assert!(buffer_contains(&terminal, " q  back"));
+    assert!(!buffer_contains(&terminal, "Search..."), "session list is hidden");
+
+    app.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    terminal.draw(|f| recall::ui::render(f, &mut app)).unwrap();
+    assert!(buffer_contains(&terminal, "Enter search"));
+    app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+    terminal.draw(|f| recall::ui::render(f, &mut app)).unwrap();
+    cleanup_ui_test();
+
+    assert!(app.transcript.is_none());
+    assert_eq!(app.query, "hello");
+    assert!(buffer_contains(&terminal, "hello"), "back to the list with the search kept");
 }
 
 // =============================================================================

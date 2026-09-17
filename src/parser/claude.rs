@@ -28,6 +28,12 @@ struct ClaudeLine {
     /// Meta message flag (slash command prompt expansions)
     #[serde(rename = "isMeta")]
     is_meta: Option<bool>,
+    /// Title set with `/rename` (type "custom-title")
+    #[serde(rename = "customTitle")]
+    custom_title: Option<String>,
+    /// Title Claude Code generated (type "ai-title")
+    #[serde(rename = "aiTitle")]
+    ai_title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +59,9 @@ impl SessionParser for ClaudeParser {
         let mut session_id: Option<String> = None;
         let mut cwd: Option<String> = None;
         let mut git_branch: Option<String> = None;
+        // The latest of each kind wins; a /rename title wins over a generated one
+        let mut custom_title: Option<String> = None;
+        let mut ai_title: Option<String> = None;
         let mut latest_timestamp: Option<DateTime<Utc>> = None;
         let mut messages: Vec<Message> = Vec::new();
 
@@ -66,6 +75,18 @@ impl SessionParser for ClaudeParser {
                 Ok(e) => e,
                 Err(_) => continue, // Skip malformed lines
             };
+
+            match entry.entry_type.as_str() {
+                "custom-title" => {
+                    custom_title = entry.custom_title.clone().filter(|t| !t.trim().is_empty());
+                    continue;
+                }
+                "ai-title" => {
+                    ai_title = entry.ai_title.clone().filter(|t| !t.trim().is_empty());
+                    continue;
+                }
+                _ => {}
+            }
 
             // Skip non-message entries
             if entry.entry_type != "user" && entry.entry_type != "assistant" {
@@ -149,6 +170,7 @@ impl SessionParser for ClaudeParser {
             file_path: path.to_path_buf(),
             cwd: cwd.unwrap_or_else(|| ".".to_string()),
             git_branch,
+            title: custom_title.or(ai_title),
             timestamp: latest_timestamp.unwrap_or_else(Utc::now),
             messages: join_consecutive_messages(messages),
         })

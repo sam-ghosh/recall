@@ -45,13 +45,16 @@ Rust TUI for searching Claude Code, Codex CLI, and Factory conversation history.
 
 - `src/main.rs` - Entry point, event loop, exec into CLI on resume
 - `src/app.rs` - Application state, search logic, background indexing thread
-- `src/ui.rs` - Two-pane ratatui rendering, match highlighting
+- `src/ui.rs` - Two-pane ratatui rendering, transcript view, shortcuts panel, match highlighting
 - `src/tui.rs` - Terminal setup/teardown
 - `src/theme.rs` - Light/dark theme with auto-detection
 - `src/session.rs` - Core types: Session, Message, SearchResult
 - `src/parser/` - JSONL parsers for Claude (`~/.claude/projects/`), Codex (`~/.codex/sessions/`), and Factory (`~/.factory/sessions/`)
-- `src/config.rs` - `~/.config/recall/config.toml` (session paths to skip)
-- `src/project.rs` - Project folder of a session's cwd (worktrees map to their project)
+- `src/config.rs` - `~/.config/recall/config.toml` (session paths and first messages to skip)
+- `src/project.rs` - Project folder of a session's cwd (worktrees map to their project), worktree name
+- `src/transcript.rs` - Full-screen transcript view: position, search, vim-style keys (drawn in `ui.rs`)
+- `src/time.rs` - Reading typed times (`2w`, `yesterday`, `2025-12-01`) and `since:`/`until:` search words
+- `src/clipboard.rs` - Copy to the system clipboard, OSC 52 fallback
 - `src/index/` - Tantivy full-text search index, stored in `~/Library/Caches/recall/` (macOS) or `~/.cache/recall/` (Linux)
 
 ## Key Patterns

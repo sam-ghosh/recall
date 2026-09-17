@@ -4,6 +4,7 @@ use super::indexer::{discover_and_sort_files, index_files, plan_update, IndexPro
 use super::schema::default_index_path;
 use super::state::IndexState;
 use super::SessionIndex;
+use crate::config::Config;
 use anyhow::Result;
 use std::io::Write;
 
@@ -21,10 +22,11 @@ pub fn ensure_index_fresh(index: &SessionIndex) -> Result<()> {
     let mut state = IndexState::load(&state_path)?;
 
     // Discover all session files
-    let files = discover_and_sort_files();
+    let config = Config::load();
+    let files = discover_and_sort_files(&config);
 
     // Find files that need indexing or removing
-    let update = plan_update(&state, &files);
+    let update = plan_update(&state, &files, &config);
     let total = update.to_index.len();
     if update.is_empty() {
         // Nothing to index, we're fresh
@@ -51,6 +53,7 @@ pub fn ensure_index_fresh(index: &SessionIndex) -> Result<()> {
         index,
         &mut writer,
         &mut state,
+        &config,
         &update,
         Some(on_progress),
         None, // No reload callback for sync mode
