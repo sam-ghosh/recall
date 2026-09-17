@@ -533,7 +533,7 @@ fn test_enter_opens_transcript_view() {
     assert!(buffer_contains(&terminal, "test-claude-123"), "header shows session ID");
     assert!(buffer_contains(&terminal, "You"));
     assert!(buffer_contains(&terminal, "message 1/"));
-    assert!(buffer_contains(&terminal, " q  back"));
+    assert!(buffer_contains(&terminal, "q back"));
     assert!(!buffer_contains(&terminal, "Search..."), "session list is hidden");
 
     app.on_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));

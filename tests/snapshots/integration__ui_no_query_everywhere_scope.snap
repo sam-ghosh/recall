@@ -1,5 +1,6 @@
 ---
 source: tests/integration.rs
+assertion_line: 419
 expression: buffer_to_string(&terminal)
 ---
                                                               │
@@ -25,4 +26,4 @@ expression: buffer_to_string(&terminal)
 
 
 
-  ↑↓  navigate  │  ?  help  │  Esc  quit                             0 sessions
+  ? keyboard shortcuts                                               0 sessions

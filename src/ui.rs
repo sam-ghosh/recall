@@ -708,80 +708,18 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Bottom row: a status message when there is one, otherwise how to open the
+/// shortcuts panel (the panel lists every key)
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     let t = theme();
-    let keycap = Style::default().bg(t.keycap_bg);
-    let label = Style::default();
     let dim = Style::default().fg(t.dim_fg);
 
     let hints: Line = if let Some(msg) = app.flash_message().or(app.status.as_deref()) {
         Line::from(Span::styled(msg.to_string(), Style::default().fg(t.match_fg)))
     } else {
-        let has_selection = !app.results.is_empty();
-        let mut spans = vec![
-            Span::styled(" ↑↓ ", keycap),
-            Span::styled(" navigate ", label),
-        ];
-        // Show Enter/Tab only when there's a selection
-        if has_selection {
-            spans.extend([
-                Span::styled(" │ ", dim),
-                Span::styled(" Enter ", keycap),
-                Span::styled(" open ", label),
-                Span::styled(" │ ", dim),
-                Span::styled(" ^R ", keycap),
-                Span::styled(" resume ", label),
-            ]);
-            if area.width > 80 {
-                spans.extend([
-                    Span::styled(" │ ", dim),
-                    Span::styled(" Tab ", keycap),
-                    Span::styled(" copy ID ", label),
-                ]);
-            }
-        }
-        // Show paging hint only if terminal is wide enough and results don't fit
-        if area.width > 90 && app.results.len() > app.list_page_size {
-            spans.extend([
-                Span::styled(" │ ", dim),
-                Span::styled(" Pg↑/↓ ", keycap),
-                Span::styled(" page ", label),
-            ]);
-        }
-        // Show Shift+↑/↓ hint only if terminal is wide enough and there are messages
-        if area.width > 100 && app.preview_message_count > 1 {
-            spans.extend([
-                Span::styled(" │ ", dim),
-                Span::styled(" ⇧↑↓ ", keycap),
-                Span::styled(" message ", label),
-            ]);
-        }
-        // Show Ctrl+E expand/collapse hint if terminal is wide enough and message is expandable
-        if area.width > 110 && app.focused_message_expandable {
-            // Check if focused message is currently expanded
-            let is_expanded = if let Some(result) = app.selected_result() {
-                let focused = app.focused_message.unwrap_or(result.matched_message_index);
-                app.expanded_messages.contains(&focused)
-            } else {
-                false
-            };
-            let action = if is_expanded { " collapse " } else { " expand " };
-            spans.extend([
-                Span::styled(" │ ", dim),
-                Span::styled(" ^E ", keycap),
-                Span::styled(action, label),
-            ]);
-        }
-        let help_key = if app.query.is_empty() { " ? " } else { " F1 " };
-        spans.extend([
-            Span::styled(" │ ", dim),
-            Span::styled(help_key, keycap),
-            Span::styled(" help ", label),
-            Span::styled(" │ ", dim),
-            Span::styled(" Esc ", keycap),
-            Span::styled(" quit", label),
-        ]);
-        Line::from(spans)
+        // '?' is typed into the search once the search box has text
+        let help_key = if app.query.is_empty() { "?" } else { "F1" };
+        Line::from(Span::styled(format!(" {} keyboard shortcuts", help_key), dim))
     };
 
     let sessions_count = Span::styled(
@@ -949,8 +887,8 @@ fn render_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
         );
     }
 
-    // Bottom row: search input, a message, or key hints; position on the right
-    let keycap = Style::default().bg(t.keycap_bg);
+    // Bottom row: search input, a message, or how to leave and find the keys;
+    // position on the right
     let dim = Style::default().fg(t.dim_fg);
     let max_top = transcript.line_count().saturating_sub(body.height as usize);
     let percent = if max_top == 0 { 100 } else { transcript.top * 100 / max_top };
@@ -975,33 +913,7 @@ fn render_transcript(frame: &mut Frame, app: &mut App, area: Rect) {
     } else if let Some(message) = flash {
         Line::styled(message, Style::default().fg(t.match_fg))
     } else {
-        let mut spans = Vec::new();
-        let hints: &[(&str, &str)] = &[
-            // Most useful first: the ones that don't fit are dropped
-            ("q", "back"),
-            ("?", "help"),
-            ("j/k", "scroll"),
-            ("d/u", "half page"),
-            ("g/G", "top/bottom"),
-            ("]/[", "message"),
-            ("/", "search"),
-            ("Enter", "resume"),
-        ];
-        let room = (status_area.width as usize).saturating_sub(position.chars().count() + 2);
-        let mut used = 0;
-        for (key, action) in hints {
-            let piece = key.chars().count() + action.chars().count() + 6;
-            if used + piece > room {
-                break;
-            }
-            if !spans.is_empty() {
-                spans.push(Span::styled(" │ ", dim));
-            }
-            spans.push(Span::styled(format!(" {} ", key), keycap));
-            spans.push(Span::raw(format!(" {}", action)));
-            used += piece;
-        }
-        Line::from(spans)
+        Line::styled("q back  ·  ? keyboard shortcuts", dim)
     };
 
     let status = Layout::default()
