@@ -50,6 +50,8 @@ Rust TUI for searching Claude Code, Codex CLI, and Factory conversation history.
 - `src/theme.rs` - Light/dark theme with auto-detection
 - `src/session.rs` - Core types: Session, Message, SearchResult
 - `src/parser/` - JSONL parsers for Claude (`~/.claude/projects/`), Codex (`~/.codex/sessions/`), and Factory (`~/.factory/sessions/`)
+- `src/config.rs` - `~/.config/recall/config.toml` (session paths to skip)
+- `src/project.rs` - Project folder of a session's cwd (worktrees map to their project)
 - `src/index/` - Tantivy full-text search index, stored in `~/Library/Caches/recall/` (macOS) or `~/.cache/recall/` (Linux)
 
 ## Key Patterns

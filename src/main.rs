@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyEventKind, MouseEventKind};
 use recall::{app::App, session, session::SessionSource, tui, ui};
 use std::time::Duration;
 
@@ -204,30 +204,7 @@ fn run(terminal: &mut tui::Tui, app: &mut App) -> Result<()> {
             match event::read()? {
                 // On Windows, crossterm sends both Press and Release events.
                 // Only handle Press to avoid double input.
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.should_quit = true;
-                    }
-                    KeyCode::Esc => app.on_escape(),
-                    KeyCode::Enter => app.on_enter(),
-                    KeyCode::Tab => app.on_tab(),
-                    KeyCode::Up => app.on_up(),
-                    KeyCode::Down => app.on_down(),
-                    KeyCode::Left => app.on_left(),
-                    KeyCode::Right => app.on_right(),
-                    KeyCode::Home => app.on_home(),
-                    KeyCode::End => app.on_end(),
-                    KeyCode::Delete => app.on_delete(),
-                    KeyCode::PageUp => app.focus_prev_message(),
-                    KeyCode::PageDown => app.focus_next_message(),
-                    KeyCode::Backspace => app.on_backspace(),
-                    KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        app.toggle_focused_expansion();
-                    }
-                    KeyCode::Char('/') => app.toggle_scope(),
-                    KeyCode::Char(c) => app.on_char(c),
-                    _ => {}
-                },
+                Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => app.scroll_preview_up(3),
                     MouseEventKind::ScrollDown => app.scroll_preview_down(3),

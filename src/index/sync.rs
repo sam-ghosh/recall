@@ -1,6 +1,6 @@
 //! Synchronous indexing for CLI mode
 
-use super::indexer::{discover_and_sort_files, index_files, IndexProgress};
+use super::indexer::{discover_and_sort_files, index_files, plan_update, IndexProgress};
 use super::schema::default_index_path;
 use super::state::IndexState;
 use super::SessionIndex;
@@ -23,24 +23,21 @@ pub fn ensure_index_fresh(index: &SessionIndex) -> Result<()> {
     // Discover all session files
     let files = discover_and_sort_files();
 
-    // Find files that need indexing
-    let files_to_index: Vec<_> = files
-        .iter()
-        .filter(|f| state.needs_reindex(f))
-        .cloned()
-        .collect();
-
-    let total = files_to_index.len();
-    if total == 0 {
+    // Find files that need indexing or removing
+    let update = plan_update(&state, &files);
+    let total = update.to_index.len();
+    if update.is_empty() {
         // Nothing to index, we're fresh
         return Ok(());
     }
 
-    eprintln!(
-        "Indexing {} session{}...",
-        total,
-        if total == 1 { "" } else { "s" }
-    );
+    if total > 0 {
+        eprintln!(
+            "Indexing {} session{}...",
+            total,
+            if total == 1 { "" } else { "s" }
+        );
+    }
 
     let mut writer = index.writer()?;
 
@@ -54,7 +51,7 @@ pub fn ensure_index_fresh(index: &SessionIndex) -> Result<()> {
         index,
         &mut writer,
         &mut state,
-        &files_to_index,
+        &update,
         Some(on_progress),
         None, // No reload callback for sync mode
     )?;
@@ -62,11 +59,13 @@ pub fn ensure_index_fresh(index: &SessionIndex) -> Result<()> {
     state.save(&state_path)?;
 
     // Clear progress line and print completion
-    eprintln!(
-        "\rIndexed {} session{}.    ",
-        total,
-        if total == 1 { "" } else { "s" }
-    );
+    if total > 0 {
+        eprintln!(
+            "\rIndexed {} session{}.    ",
+            total,
+            if total == 1 { "" } else { "s" }
+        );
+    }
 
     // Reload index to see new data
     index.reload()?;

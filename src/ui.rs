@@ -5,10 +5,55 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 use std::sync::OnceLock;
+
+/// Keyboard shortcuts shown in the `?` panel, grouped by section.
+/// Keep in sync with `App::on_key` and the README.
+pub const SHORTCUTS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Sessions",
+        &[
+            ("↑ ↓", "Move one session"),
+            ("PgUp PgDn", "Move one page"),
+            ("Ctrl+U Ctrl+D", "Move half a page"),
+            ("Home End", "First / last session"),
+            ("Enter", "Resume conversation"),
+            ("Tab", "Copy session ID and quit"),
+        ],
+    ),
+    (
+        "Preview",
+        &[
+            ("Shift+↑ ↓", "Previous / next message"),
+            ("Ctrl+E", "Expand / collapse message"),
+            ("Mouse wheel", "Scroll"),
+            ("Click", "Select message"),
+            ("Double-click", "Expand / collapse message"),
+        ],
+    ),
+    (
+        "Search",
+        &[
+            ("type", "Words match the start of words"),
+            ("\"a b\"", "Exact phrase"),
+            ("/", "Switch project / everywhere"),
+            ("← → Ctrl+A", "Move cursor"),
+            ("Backspace Del", "Delete character"),
+            ("Esc", "Clear search; quit when empty"),
+        ],
+    ),
+    (
+        "Help",
+        &[
+            ("?", "This panel (when search is empty)"),
+            ("F1", "This panel (any time)"),
+            ("Ctrl+C", "Quit"),
+        ],
+    ),
+];
 
 fn theme() -> &'static Theme {
     static THEME: OnceLock<Theme> = OnceLock::new();
@@ -84,6 +129,80 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(main_layout[4]);
 
     render_status_bar(frame, app, status_with_padding[1]);
+
+    if app.show_help {
+        render_help(frame, area);
+    }
+}
+
+/// Keyboard shortcuts panel, centered over the rest of the UI
+fn render_help(frame: &mut Frame, area: Rect) {
+    let t = theme();
+    const KEY_WIDTH: usize = 15;
+    const COLUMN_WIDTH: usize = KEY_WIDTH + 36;
+
+    let section_lines = |sections: &[(&str, &[(&str, &str)])]| -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        for (i, (title, entries)) in sections.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::styled(
+                title.to_string(),
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
+            ));
+            for (key, action) in entries.iter() {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!(" {:<width$}", key, width = KEY_WIDTH),
+                        Style::default().fg(t.match_fg),
+                    ),
+                    Span::raw(action.to_string()),
+                ]));
+            }
+        }
+        lines
+    };
+
+    // Two columns when there is room, otherwise one
+    let two_columns = area.width as usize >= COLUMN_WIDTH * 2 + 6;
+    let columns: Vec<Vec<Line>> = if two_columns {
+        vec![section_lines(&SHORTCUTS[..2]), section_lines(&SHORTCUTS[2..])]
+    } else {
+        vec![section_lines(SHORTCUTS)]
+    };
+
+    let inner_height = columns.iter().map(|c| c.len()).max().unwrap_or(0) as u16;
+    let inner_width = (COLUMN_WIDTH * columns.len() + 2 * (columns.len() - 1)) as u16;
+    let width = (inner_width + 4).min(area.width);
+    let height = (inner_height + 2).min(area.height);
+    let panel = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(t.dim_fg))
+        .title(Span::styled(" Keyboard shortcuts ", Style::default().add_modifier(Modifier::BOLD)))
+        .title_bottom(Line::styled(" Esc or ? to close ", Style::default().fg(t.dim_fg)).right_aligned());
+    let inner = block.inner(panel);
+    frame.render_widget(Clear, panel);
+    frame.render_widget(block, panel);
+
+    let inner = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .split(inner)[1];
+    let column_areas = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, columns.len() as u32); columns.len()])
+        .split(inner);
+    for (lines, column_area) in columns.into_iter().zip(column_areas.iter()) {
+        frame.render_widget(Paragraph::new(lines), *column_area);
+    }
 }
 
 fn render_search_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -281,6 +400,7 @@ fn render_results_list(frame: &mut Frame, app: &mut App, area: Rect) {
     // Calculate visible items (each item is 3 lines: header, snippet, empty)
     let lines_per_item = 3;
     let visible_items = (area.height as usize) / lines_per_item;
+    app.list_page_size = visible_items.max(1);
 
     // Update scroll offset to keep selected item visible
     if app.selected < app.list_scroll {
@@ -517,11 +637,19 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(" copy ID ", label),
             ]);
         }
-        // Show Pg↑/↓ hint only if terminal is wide enough and there are messages
-        if area.width > 90 && app.preview_message_count > 1 {
+        // Show paging hint only if terminal is wide enough and results don't fit
+        if area.width > 90 && app.results.len() > app.list_page_size {
             spans.extend([
                 Span::styled(" │ ", dim),
                 Span::styled(" Pg↑/↓ ", keycap),
+                Span::styled(" page ", label),
+            ]);
+        }
+        // Show Shift+↑/↓ hint only if terminal is wide enough and there are messages
+        if area.width > 100 && app.preview_message_count > 1 {
+            spans.extend([
+                Span::styled(" │ ", dim),
+                Span::styled(" ⇧↑↓ ", keycap),
                 Span::styled(" message ", label),
             ]);
         }
@@ -541,7 +669,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(action, label),
             ]);
         }
+        let help_key = if app.query.is_empty() { " ? " } else { " F1 " };
         spans.extend([
+            Span::styled(" │ ", dim),
+            Span::styled(help_key, keycap),
+            Span::styled(" help ", label),
             Span::styled(" │ ", dim),
             Span::styled(" Esc ", keycap),
             Span::styled(" quit", label),

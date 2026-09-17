@@ -37,12 +37,25 @@ recall
 | Key | Action |
 |-----|--------|
 | `↑↓` | Navigate sessions |
-| `Pg↑/↓` | Scroll messages |
+| `Pg↑/↓` | Page through sessions |
+| `Ctrl+U` / `Ctrl+D` | Half a page up/down |
+| `Home` / `End` | First/last session |
+| `Shift+↑↓` | Previous/next message in the preview |
 | `Ctrl+E` | Expand message |
+| `Ctrl+A` | Cursor to start of search |
 | `Enter` | Resume conversation |
 | `Tab` | Copy session ID |
-| `/` | Toggle scope (folder/everywhere) |
-| `Esc` | Quit |
+| `/` | Toggle scope (project/everywhere) |
+| `?` / `F1` | Keyboard shortcuts panel (`?` when the search is empty) |
+| `Esc` | Clear search; quit when empty |
+
+Typed words match the start of words: `xeni` finds `xenia`. Every word must match.
+Quotes search for an exact phrase: `"gunicorn restart"`.
+
+The project scope shows sessions started in the launch folder, in folders inside
+it, and in its git worktrees (`<project>__worktrees/<branch>` or
+`<project>/.worktrees/<branch>`). `recall search --cwd` and `recall list --cwd`
+use the same rule.
 
 ## Ask it to Search for You
 Simply tell your agent:
@@ -59,6 +72,17 @@ pls find me the last conversation where we deployed to staging, use `recall sear
 No MCP required. The `recall search` CLI fulfills the same purpose. See [Ask it to Search for You](#ask-it-to-search-for-you).
 
 ## Customize
+
+### Skip session files
+
+Session files whose path contains any string in `skip_paths_containing` are not
+indexed. The default skips claude-mem's background observer sessions. To change
+it, create `~/.config/recall/config.toml`:
+```toml
+skip_paths_containing = ["claude-mem-observer-sessions", "some-scratch-project"]
+```
+
+### Resume commands
 
 recall's resume commands can be configured with environment variables.
 

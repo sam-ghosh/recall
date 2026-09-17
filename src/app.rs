@@ -1,7 +1,12 @@
-use crate::index::{discover_and_sort_files, index_files, IndexProgress, IndexState, SessionIndex};
+use crate::index::{
+    discover_and_sort_files, index_files, plan_update, IndexProgress, IndexState, SearchFilter,
+    SessionIndex,
+};
 use crate::parser;
+use crate::project::project_root;
 use crate::session::{SearchResult, Session};
 use anyhow::Result;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -10,6 +15,9 @@ use std::time::{Duration, Instant};
 
 /// Debounce delay for search (avoid searching on every keystroke during fast typing/paste)
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(50);
+
+/// How many sessions the list shows at most
+const RESULT_LIMIT: usize = 200;
 
 /// Messages from the indexing thread
 pub enum IndexMsg {
@@ -24,8 +32,9 @@ pub enum IndexMsg {
 pub enum SearchScope {
     /// Search all conversations
     Everything,
-    /// Search only conversations from a specific folder
-    Folder(String),
+    /// Search only conversations from a project: the folder, folders inside
+    /// it, and its git worktrees (see `project::project_root`)
+    Project(String),
 }
 
 pub struct App {
@@ -57,6 +66,8 @@ pub struct App {
     pub pending_auto_scroll: bool,
     /// Whether preview has more content than visible (for scroll hint)
     pub preview_scrollable: bool,
+    /// Whether the keyboard shortcuts panel is open
+    pub show_help: bool,
     /// Should quit
     pub should_quit: bool,
     /// Should execute resume (set on Enter)
@@ -75,8 +86,10 @@ pub struct App {
     pub indexing: bool,
     /// Current search scope
     pub search_scope: SearchScope,
-    /// Launch directory (for folder-scoped search)
-    pub launch_cwd: String,
+    /// Project of the launch directory (for project-scoped search)
+    pub launch_project: String,
+    /// Result rows visible in the list, set when rendering (for page up/down)
+    pub list_page_size: usize,
     /// Whether a search is pending (for debouncing)
     search_pending: bool,
     /// When the last input occurred (for debouncing)
@@ -131,6 +144,7 @@ impl App {
             preview_area: (0, 0, 0, 0),
             pending_auto_scroll: false,
             preview_scrollable: false,
+            show_help: false,
             should_quit: false,
             should_resume: None,
             should_copy: None,
@@ -139,8 +153,9 @@ impl App {
             total_sessions: 0,
             index_rx: Some(rx),
             indexing: true,
-            search_scope: SearchScope::Folder(launch_cwd.clone()),
-            launch_cwd,
+            search_scope: SearchScope::Project(project_root(&launch_cwd)),
+            launch_project: project_root(&launch_cwd),
+            list_page_size: 10,
             search_pending: false,
             last_input: Instant::now(),
             index_error: None,
@@ -231,18 +246,19 @@ impl App {
         // Remember currently selected session to preserve selection
         let selected_session_id = self.results.get(self.selected).map(|r| r.session.id.clone());
 
-        let mut results = if self.query.is_empty() {
-            self.index.recent(50)?
-        } else {
-            self.index.search(&self.query, 50)?
+        let filter = SearchFilter {
+            project: match &self.search_scope {
+                SearchScope::Project(root) => Some(root.clone()),
+                SearchScope::Everything => None,
+            },
+            ..Default::default()
         };
 
-        // Filter by scope if searching within a folder
-        if let SearchScope::Folder(ref cwd) = self.search_scope {
-            results.retain(|r| r.session.cwd == *cwd);
-        }
-
-        self.results = results;
+        self.results = if self.query.is_empty() {
+            self.index.recent(RESULT_LIMIT, &filter)?
+        } else {
+            self.index.search(&self.query, RESULT_LIMIT, &filter)?
+        };
 
         // Try to preserve selection on the same session
         if let Some(ref id) = selected_session_id {
@@ -263,11 +279,11 @@ impl App {
         Ok(())
     }
 
-    /// Toggle search scope between everything and current folder
+    /// Toggle search scope between everything and the current project
     pub fn toggle_scope(&mut self) {
         self.search_scope = match self.search_scope {
-            SearchScope::Everything => SearchScope::Folder(self.launch_cwd.clone()),
-            SearchScope::Folder(_) => SearchScope::Everything,
+            SearchScope::Everything => SearchScope::Project(self.launch_project.clone()),
+            SearchScope::Project(_) => SearchScope::Everything,
         };
         let _ = self.search();
     }
@@ -276,7 +292,7 @@ impl App {
     pub fn scope_folder_name(&self) -> Option<&str> {
         match &self.search_scope {
             SearchScope::Everything => None,
-            SearchScope::Folder(path) => {
+            SearchScope::Project(path) => {
                 path.rsplit(std::path::MAIN_SEPARATOR).next()
             }
         }
@@ -289,7 +305,7 @@ impl App {
     pub fn scope_display_path(&self) -> Option<String> {
         let path = match &self.search_scope {
             SearchScope::Everything => return None,
-            SearchScope::Folder(path) => path.as_str(),
+            SearchScope::Project(path) => path.as_str(),
         };
 
         // Replace home dir with ~ (HOME on Unix, USERPROFILE on Windows)
@@ -312,6 +328,55 @@ impl App {
         let last_component = path.rsplit(std::path::MAIN_SEPARATOR).next().unwrap_or(path);
         let prefix = if display_path.starts_with('~') { "~" } else { "" };
         Some(format!("{}/.../{}", prefix, last_component))
+    }
+
+    /// Handle a key press. The shortcuts panel (`ui::SHORTCUTS`) lists these.
+    pub fn on_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        if ctrl && key.code == KeyCode::Char('c') {
+            self.should_quit = true;
+            return;
+        }
+
+        if self.show_help {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Enter | KeyCode::F(1) | KeyCode::Char('?') | KeyCode::Char('q')
+            ) {
+                self.show_help = false;
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::F(1) => self.show_help = true,
+            // With text in the search box, '?' is typed as part of the search
+            KeyCode::Char('?') if self.query.is_empty() => self.show_help = true,
+            KeyCode::Esc => self.on_escape(),
+            KeyCode::Enter => self.on_enter(),
+            KeyCode::Tab => self.on_tab(),
+            KeyCode::Char('d') if ctrl => self.on_half_page_down(),
+            KeyCode::Char('u') if ctrl => self.on_half_page_up(),
+            KeyCode::Char('a') if ctrl => self.on_home(),
+            KeyCode::Char('e') if ctrl => self.toggle_focused_expansion(),
+            KeyCode::Up if shift => self.focus_prev_message(),
+            KeyCode::Down if shift => self.focus_next_message(),
+            KeyCode::Up => self.on_up(),
+            KeyCode::Down => self.on_down(),
+            KeyCode::Left => self.on_left(),
+            KeyCode::Right => self.on_right(),
+            KeyCode::Home => self.select_first(),
+            KeyCode::End => self.select_last(),
+            KeyCode::PageUp => self.on_page_up(),
+            KeyCode::PageDown => self.on_page_down(),
+            KeyCode::Delete => self.on_delete(),
+            KeyCode::Backspace => self.on_backspace(),
+            KeyCode::Char('/') => self.toggle_scope(),
+            KeyCode::Char(c) => self.on_char(c),
+            _ => {}
+        }
     }
 
     /// Handle character input
@@ -409,16 +474,57 @@ impl App {
 
     /// Move selection up
     pub fn on_up(&mut self) {
-        if !self.results.is_empty() {
-            self.selected = self.selected.saturating_sub(1);
-            self.update_preview_scroll();
-        }
+        self.move_selection(-1);
     }
 
     /// Move selection down
     pub fn on_down(&mut self) {
-        if !self.results.is_empty() {
-            self.selected = (self.selected + 1).min(self.results.len() - 1);
+        self.move_selection(1);
+    }
+
+    /// Move selection up by one screen of results
+    pub fn on_page_up(&mut self) {
+        self.move_selection(-(self.list_page_size.max(1) as isize));
+    }
+
+    /// Move selection down by one screen of results
+    pub fn on_page_down(&mut self) {
+        self.move_selection(self.list_page_size.max(1) as isize);
+    }
+
+    /// Move selection up by half a screen of results
+    pub fn on_half_page_up(&mut self) {
+        self.move_selection(-((self.list_page_size / 2).max(1) as isize));
+    }
+
+    /// Move selection down by half a screen of results
+    pub fn on_half_page_down(&mut self) {
+        self.move_selection((self.list_page_size / 2).max(1) as isize);
+    }
+
+    /// Select the first result
+    pub fn select_first(&mut self) {
+        self.move_selection(isize::MIN);
+    }
+
+    /// Select the last result
+    pub fn select_last(&mut self) {
+        self.move_selection(isize::MAX);
+    }
+
+    /// Move selection by `delta` rows, stopping at the first and last result
+    fn move_selection(&mut self, delta: isize) {
+        if self.results.is_empty() {
+            return;
+        }
+        let last = self.results.len() - 1;
+        let target = if delta < 0 {
+            self.selected.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.selected.saturating_add(delta as usize).min(last)
+        };
+        if target != self.selected {
+            self.selected = target;
             self.update_preview_scroll();
         }
     }
@@ -559,13 +665,9 @@ fn background_index(index_path: PathBuf, state_path: PathBuf, tx: Sender<IndexMs
     // Discover and sort files by mtime (most recent first)
     let files = discover_and_sort_files();
 
-    let files_to_index: Vec<_> = files
-        .iter()
-        .filter(|f| state.needs_reindex(f))
-        .cloned()
-        .collect();
+    let update = plan_update(&state, &files);
 
-    if files_to_index.is_empty() {
+    if update.is_empty() {
         let _ = tx.send(IndexMsg::Done {
             total_sessions: files.len(),
         });
@@ -599,7 +701,7 @@ fn background_index(index_path: PathBuf, state_path: PathBuf, tx: Sender<IndexMs
         &index,
         &mut writer,
         &mut state,
-        &files_to_index,
+        &update,
         Some(on_progress),
         Some(on_reload),
     );
@@ -643,6 +745,7 @@ mod tests {
             preview_area: (0, 0, 0, 0),
             pending_auto_scroll: false,
             preview_scrollable: false,
+            show_help: false,
             should_quit: false,
             should_resume: None,
             should_copy: None,
@@ -652,7 +755,8 @@ mod tests {
             index_rx: None,
             indexing: false,
             search_scope: SearchScope::Everything,
-            launch_cwd: String::new(),
+            launch_project: String::new(),
+            list_page_size: 10,
             search_pending: false,
             last_input: Instant::now(),
             index_error: None,
@@ -876,6 +980,146 @@ mod tests {
         let clicked = app.click_preview_message(55, 8); // y=5+3=8 -> line 3
 
         assert!(!clicked);
+    }
+
+    // ==================== list paging tests ====================
+
+    fn app_with_results(count: usize) -> App {
+        let mut app = test_app();
+        app.results = (0..count)
+            .map(|i| SearchResult {
+                session: Session {
+                    id: format!("s{}", i),
+                    source: crate::session::SessionSource::ClaudeCode,
+                    file_path: PathBuf::new(),
+                    cwd: String::new(),
+                    git_branch: None,
+                    timestamp: chrono::Utc::now(),
+                    messages: Vec::new(),
+                },
+                score: 0.0,
+                matched_message_index: 0,
+                snippet: String::new(),
+                match_spans: Vec::new(),
+                match_fragment: String::new(),
+            })
+            .collect();
+        app.list_page_size = 10;
+        app
+    }
+
+    #[test]
+    fn test_page_down_moves_one_screen_and_stops_at_last() {
+        let mut app = app_with_results(25);
+
+        app.on_page_down();
+        assert_eq!(app.selected, 10);
+        app.on_page_down();
+        app.on_page_down();
+        assert_eq!(app.selected, 24);
+    }
+
+    #[test]
+    fn test_page_up_stops_at_first() {
+        let mut app = app_with_results(25);
+        app.selected = 13;
+
+        app.on_page_up();
+        assert_eq!(app.selected, 3);
+        app.on_page_up();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_half_page_moves() {
+        let mut app = app_with_results(25);
+
+        app.on_half_page_down();
+        assert_eq!(app.selected, 5);
+        app.on_half_page_up();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_first_and_last() {
+        let mut app = app_with_results(25);
+
+        app.select_last();
+        assert_eq!(app.selected, 24);
+        app.select_first();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn test_paging_with_no_results_is_noop() {
+        let mut app = test_app();
+
+        app.on_page_down();
+        app.select_last();
+
+        assert_eq!(app.selected, 0);
+    }
+
+    // ==================== shortcuts panel tests ====================
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn test_question_mark_opens_help_when_search_is_empty() {
+        let mut app = test_app();
+
+        press(&mut app, KeyCode::Char('?'));
+
+        assert!(app.show_help);
+        assert_eq!(app.query, "");
+    }
+
+    #[test]
+    fn test_question_mark_is_typed_when_search_has_text() {
+        let mut app = test_app();
+        app.on_char('a');
+
+        press(&mut app, KeyCode::Char('?'));
+
+        assert!(!app.show_help);
+        assert_eq!(app.query, "a?");
+    }
+
+    #[test]
+    fn test_f1_opens_help_with_search_text() {
+        let mut app = test_app();
+        app.on_char('a');
+
+        press(&mut app, KeyCode::F(1));
+
+        assert!(app.show_help);
+    }
+
+    #[test]
+    fn test_esc_closes_help_without_quitting_or_clearing() {
+        let mut app = test_app();
+        app.show_help = true;
+        app.query = "deploy".to_string();
+
+        press(&mut app, KeyCode::Esc);
+
+        assert!(!app.show_help);
+        assert!(!app.should_quit);
+        assert_eq!(app.query, "deploy");
+    }
+
+    #[test]
+    fn test_other_keys_ignored_while_help_open() {
+        let mut app = test_app();
+        app.show_help = true;
+
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.query, "");
+        assert!(app.should_resume.is_none());
     }
 
     // ==================== State reset tests ====================

@@ -38,7 +38,8 @@ pub trait SessionParser {
     fn can_parse(path: &Path) -> bool;
 }
 
-/// Discover all session files from Claude Code, Codex CLI, and Factory
+/// Discover all session files from Claude Code, Codex CLI, Factory and OpenCode,
+/// leaving out paths listed in `skip_paths_containing` (see `config.rs`)
 pub fn discover_session_files() -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
 
@@ -119,6 +120,9 @@ pub fn discover_session_files() -> Vec<std::path::PathBuf> {
             }
         }
     }
+
+    let config = crate::config::Config::load();
+    files.retain(|path| !config.should_skip(path));
 
     files
 }

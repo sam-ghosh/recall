@@ -4,6 +4,7 @@ use super::state::IndexState;
 use super::SessionIndex;
 use crate::parser;
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use tantivy::IndexWriter;
 
@@ -34,7 +35,39 @@ pub fn discover_and_sort_files() -> Vec<PathBuf> {
     files
 }
 
-/// Index a batch of files, calling progress callbacks as work proceeds.
+/// What an index run has to do
+pub struct IndexUpdate {
+    /// New or changed session files, most recent first
+    pub to_index: Vec<PathBuf>,
+    /// Indexed files that were deleted, or are now skipped by config
+    pub to_remove: Vec<PathBuf>,
+}
+
+impl IndexUpdate {
+    pub fn is_empty(&self) -> bool {
+        self.to_index.is_empty() && self.to_remove.is_empty()
+    }
+}
+
+/// Compare discovered files with what the index already holds
+pub fn plan_update(state: &IndexState, discovered: &[PathBuf]) -> IndexUpdate {
+    let discovered_set: HashSet<&PathBuf> = discovered.iter().collect();
+    IndexUpdate {
+        to_index: discovered
+            .iter()
+            .filter(|f| state.needs_reindex(f))
+            .cloned()
+            .collect(),
+        to_remove: state
+            .indexed_files
+            .keys()
+            .filter(|f| !discovered_set.contains(f))
+            .cloned()
+            .collect(),
+    }
+}
+
+/// Apply an update: remove records for `to_remove`, then index `to_index`, calling progress callbacks as work proceeds.
 ///
 /// - `on_progress`: Called every 50 files with current progress
 /// - `on_reload`: Called every 200 files after a commit (for incremental updates)
@@ -44,10 +77,16 @@ pub fn index_files(
     index: &SessionIndex,
     writer: &mut IndexWriter,
     state: &mut IndexState,
-    files: &[PathBuf],
+    update: &IndexUpdate,
     mut on_progress: Option<ProgressCallback>,
     mut on_reload: Option<ReloadCallback>,
 ) -> Result<usize> {
+    for file_path in &update.to_remove {
+        index.delete_session(writer, file_path);
+        state.remove(file_path);
+    }
+
+    let files = &update.to_index;
     let total = files.len();
     let mut indexed = 0;
 
@@ -94,4 +133,28 @@ pub fn index_files(
     writer.commit()?;
 
     Ok(indexed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plan_update_removes_files_no_longer_discovered() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let kept = dir.path().join("kept.jsonl");
+        let gone = dir.path().join("gone.jsonl");
+        let new = dir.path().join("new.jsonl");
+        for f in [&kept, &gone, &new] {
+            std::fs::write(f, "{}").unwrap();
+        }
+        let mut state = IndexState::default();
+        state.mark_indexed(&kept);
+        state.mark_indexed(&gone);
+
+        let update = plan_update(&state, &[kept.clone(), new.clone()]);
+
+        assert_eq!(update.to_index, vec![new]);
+        assert_eq!(update.to_remove, vec![gone]);
+    }
 }

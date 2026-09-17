@@ -25,4 +25,4 @@ expression: buffer_to_string(&terminal)
 
 
 
-  ↑↓  navigate  │  Esc  quit                                         0 sessions
+  ↑↓  navigate  │  ?  help  │  Esc  quit                             0 sessions

@@ -1,6 +1,8 @@
 pub mod app;
+pub mod config;
 pub mod index;
 pub mod parser;
+pub mod project;
 pub mod session;
 pub mod theme;
 pub mod tui;

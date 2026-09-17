@@ -3,8 +3,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use recall::{
-    index::{ensure_index_fresh, SessionIndex},
+    index::{ensure_index_fresh, SearchFilter, SessionIndex},
     parser,
+    project::project_root,
     session::{ListOutput, Message, SearchOutput, SearchResultOutput, SessionSource},
 };
 
@@ -34,7 +35,13 @@ pub fn run_search(
         return search_in_session(&index, query, &sid, context);
     }
 
-    let results = index.search(query, limit * 2)?; // Get more to filter
+    let filter = SearchFilter {
+        project: cwd.as_deref().map(project_root),
+        source,
+        since: since_dt,
+        until: until_dt,
+    };
+    let results = index.search(query, limit, &filter)?;
 
     // Pre-compute query terms once (not per-session)
     let query_lower = query.to_lowercase();
@@ -45,14 +52,6 @@ pub fn run_search(
         query: query.to_string(),
         results: results
             .into_iter()
-            // Filter by source
-            .filter(|r| source.is_none_or(|s| r.session.source == s))
-            // Filter by time
-            .filter(|r| since_dt.is_none_or(|t| r.session.timestamp >= t))
-            .filter(|r| until_dt.is_none_or(|t| r.session.timestamp <= t))
-            // Filter by working directory
-            .filter(|r| cwd.as_ref().is_none_or(|c| r.session.cwd == *c))
-            .take(limit)
             .map(|r| {
                 // Load full session to get messages
                 let session = parser::parse_session_file(&r.session.file_path)
@@ -233,19 +232,17 @@ pub fn run_list(
     let since_dt = since.as_ref().map(|s| parse_time(s)).transpose()?;
     let until_dt = until.as_ref().map(|s| parse_time(s)).transpose()?;
 
-    let results = index.recent(limit * 2)?; // Get more to filter
+    let filter = SearchFilter {
+        project: cwd.as_deref().map(project_root),
+        source,
+        since: since_dt,
+        until: until_dt,
+    };
+    let results = index.recent(limit, &filter)?;
 
     let output = ListOutput {
         sessions: results
             .iter()
-            // Filter by source
-            .filter(|r| source.is_none_or(|s| r.session.source == s))
-            // Filter by time
-            .filter(|r| since_dt.is_none_or(|t| r.session.timestamp >= t))
-            .filter(|r| until_dt.is_none_or(|t| r.session.timestamp <= t))
-            // Filter by working directory
-            .filter(|r| cwd.as_ref().is_none_or(|c| r.session.cwd == *c))
-            .take(limit)
             .map(|r| r.session.to_summary())
             .collect(),
     };

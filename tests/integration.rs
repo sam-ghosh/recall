@@ -238,7 +238,7 @@ fn test_toggle_scope() {
     wait_for_indexing(&mut app, 100);
 
     // Should start in folder scope
-    assert!(matches!(app.search_scope, recall::SearchScope::Folder(_)));
+    assert!(matches!(app.search_scope, recall::SearchScope::Project(_)));
 
     // Toggle to everywhere
     app.toggle_scope();
@@ -246,7 +246,7 @@ fn test_toggle_scope() {
 
     // Toggle back
     app.toggle_scope();
-    assert!(matches!(app.search_scope, recall::SearchScope::Folder(_)));
+    assert!(matches!(app.search_scope, recall::SearchScope::Project(_)));
 
     std::env::remove_var("RECALL_HOME_OVERRIDE");
 }
@@ -460,6 +460,32 @@ fn test_ui_with_query_everywhere_scope_no_results() {
     cleanup_ui_test();
 
     assert_snapshot!(buffer_to_string(&terminal));
+}
+
+#[test]
+fn test_help_panel_lists_shortcuts() {
+    let _lock = lock_test();
+    let _temp_dir = setup_ui_test();
+
+    let mut app = recall::App::new(String::new()).unwrap();
+    wait_for_indexing(&mut app, 100);
+    app.on_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('?'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+
+    for (width, height) in [(120, 30), (80, 40)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| recall::ui::render(f, &mut app)).unwrap();
+        assert!(buffer_contains(&terminal, "Keyboard shortcuts"));
+        for (_, entries) in recall::ui::SHORTCUTS {
+            for (key, _) in entries.iter() {
+                assert!(buffer_contains(&terminal, key), "missing {} at {}x{}", key, width, height);
+            }
+        }
+    }
+
+    cleanup_ui_test();
 }
 
 // =============================================================================
