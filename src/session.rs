@@ -167,6 +167,10 @@ fn shell_quote(word: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub session: Session,
+    /// Number of messages in the session
+    pub message_count: u64,
+    /// Seconds from the session's first message to its last
+    pub duration_secs: u64,
     pub score: f32,
     /// Index of the most recent message containing a match
     pub matched_message_index: usize,

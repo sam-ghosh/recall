@@ -85,8 +85,11 @@ skip_sessions_starting_with = [
 
 - One row per session in the recent list (upstream could repeat a session).
 - Each row shows the project name, `⎇ <worktree>` for worktree sessions, the
-  tool, how long ago, and the conversation title (Claude Code `/rename` or its
-  generated title, Codex thread name, OpenCode/Factory title).
+  tool, the conversation title, and on the right the message count, how long
+  the session ran (first message to last) and how long ago:
+  `616 msgs · 5h 18m · 3h ago`. The count is of text messages only (tool
+  calls and results are not counted). The title is Claude Code `/rename` or its
+  generated title, Codex thread name, or OpenCode/Factory title.
 - The preview on the right reads a session file once and reuses it until the
   file changes (upstream read it on every redraw).
 
@@ -268,3 +271,4 @@ New files:
 - `65ea099` Transcript view uses the full terminal width
 - `596427b` nvim-style normal and search modes, list/preview panes, key hints per view
 - `0bdab81` Only Ctrl+C quits; only Ctrl+R resumes from the transcript view
+- Message count and run time on each list row

@@ -494,11 +494,13 @@ fn render_results_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     format!("{} {}", result.session.source.icon(), result.session.source.display_name()),
                     Style::default().fg(source_color),
                 ),
-                Span::styled(format!("  {}", time_ago), header_style),
             ]);
+            // Right side: "616 msgs · 5h 18m · 3h ago"
+            let right = session_stats(result.message_count, result.duration_secs, &time_ago);
+            let right_width = Span::raw(right.as_str()).width();
             // Title fills what is left of the header line
             if let Some(title) = &result.session.title {
-                let used: usize = header_spans.iter().map(|s| s.width()).sum::<usize>() + 2;
+                let used: usize = header_spans.iter().map(|s| s.width()).sum::<usize>() + 2 + right_width + 2;
                 let room = available_width.saturating_sub(used);
                 if room >= 8 {
                     header_spans.push(Span::raw("  "));
@@ -508,6 +510,10 @@ fn render_results_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     ));
                 }
             }
+            let used: usize = header_spans.iter().map(|s| s.width()).sum();
+            let gap = available_width.saturating_sub(used + right_width).max(2);
+            header_spans.push(Span::raw(" ".repeat(gap)));
+            header_spans.push(Span::styled(right, Style::default().fg(t.dim_fg)));
 
             // Truncate snippet to fit available width (Tantivy already centered it)
             let snippet: String = result.snippet.chars().take(available_width).collect();
@@ -1265,6 +1271,24 @@ fn highlight_matches_owned(text: &str, query: &str) -> Vec<Span<'static>> {
 
 
 
+/// Message count, how long the session ran and how long ago, for a list row:
+/// "616 msgs · 5h 18m · 3h ago". The run time is left out when under a minute.
+fn session_stats(message_count: u64, duration_secs: u64, time_ago: &str) -> String {
+    let mut parts = vec![if message_count == 1 {
+        "1 msg".to_string()
+    } else {
+        format!("{} msgs", message_count)
+    }];
+    let minutes = duration_secs / 60;
+    if minutes >= 60 {
+        parts.push(format!("{}h {}m", minutes / 60, minutes % 60));
+    } else if minutes >= 1 {
+        parts.push(format!("{}m", minutes));
+    }
+    parts.push(time_ago.to_string());
+    parts.join(" · ")
+}
+
 /// Format a timestamp as a human-readable "time ago" string
 fn format_time_ago(timestamp: chrono::DateTime<chrono::Utc>) -> String {
     let now = chrono::Utc::now();
@@ -1323,6 +1347,13 @@ fn select_lines_to_show(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_session_stats() {
+        assert_eq!(session_stats(616, 5 * 3600 + 18 * 60 + 40, "3h ago"), "616 msgs · 5h 18m · 3h ago");
+        assert_eq!(session_stats(72, 28 * 60, "1d ago"), "72 msgs · 28m · 1d ago");
+        assert_eq!(session_stats(1, 20, "2d ago"), "1 msg · 2d ago");
+    }
 
     #[test]
     fn test_split_sections_keeps_order_and_all_sections() {

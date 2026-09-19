@@ -1324,6 +1324,8 @@ mod tests {
                     timestamp: chrono::Utc::now(),
                     messages: Vec::new(),
                 },
+                message_count: 0,
+                duration_secs: 0,
                 score: 0.0,
                 matched_message_index: 0,
                 snippet: String::new(),

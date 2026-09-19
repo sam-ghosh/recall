@@ -16,7 +16,7 @@ use tantivy::{doc, DocAddress, Index, IndexReader, IndexWriter, ReloadPolicy, Se
 
 /// Bump when the schema or what gets indexed changes. An index written with a
 /// different version is deleted and rebuilt on open.
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const SCHEMA_VERSION_FILE: &str = "recall-schema-version";
 
 /// `record_type` values: one record per message (searched) and one per session
@@ -76,6 +76,8 @@ pub struct SessionIndex {
     content: Field,
     preview: Field,
     message_index: Field,
+    message_count: Field,
+    duration_secs: Field,
 }
 
 impl SessionIndex {
@@ -134,6 +136,8 @@ impl SessionIndex {
             content: schema.get_field("content").unwrap(),
             preview: schema.get_field("preview").unwrap(),
             message_index: schema.get_field("message_index").unwrap(),
+            message_count: schema.get_field("message_count").unwrap(),
+            duration_secs: schema.get_field("duration_secs").unwrap(),
             schema,
         })
     }
@@ -159,6 +163,11 @@ impl SessionIndex {
         // Message index within the session (for match-recency)
         builder.add_u64_field("message_index", STORED);
 
+        // Shown in the session list: number of messages, and seconds from the
+        // first message to the last
+        builder.add_u64_field("message_count", STORED);
+        builder.add_u64_field("duration_secs", STORED);
+
         // Searchable text: the message (message records) or the title (session records)
         builder.add_text_field("content", TEXT | STORED);
 
@@ -182,6 +191,8 @@ impl SessionIndex {
         let file_path = session.file_path.to_string_lossy().to_string();
         let git_branch = session.git_branch.clone().unwrap_or_default();
         let title = session.title.clone().unwrap_or_default();
+        let message_count = session.messages.len() as u64;
+        let duration_secs = session_duration_secs(session);
 
         // Index each message separately for match-recency ranking
         for (idx, message) in session.messages.iter().enumerate() {
@@ -196,6 +207,8 @@ impl SessionIndex {
                 self.timestamp => timestamp_secs,
                 self.record_type => RECORD_MESSAGE,
                 self.message_index => idx as u64,
+                self.message_count => message_count,
+                self.duration_secs => duration_secs,
                 self.content => message.content.clone(),
             ))?;
         }
@@ -211,6 +224,8 @@ impl SessionIndex {
             self.timestamp => timestamp_secs,
             self.record_type => RECORD_SESSION,
             self.message_index => 0u64,
+            self.message_count => message_count,
+            self.duration_secs => duration_secs,
             self.content => title,
             self.preview => session_preview(session),
         ))?;
@@ -337,6 +352,8 @@ impl SessionIndex {
                     .collect();
                 SearchResult {
                     session: self.session_from_doc(&m.doc),
+                    message_count: self.number(&m.doc, self.message_count),
+                    duration_secs: self.number(&m.doc, self.duration_secs),
                     score: m.score,
                     matched_message_index: m.message_index,
                     snippet,
@@ -370,6 +387,8 @@ impl SessionIndex {
             let doc: TantivyDocument = searcher.doc(doc_addr)?;
             results.push(SearchResult {
                 session: self.session_from_doc(&doc),
+                message_count: self.number(&doc, self.message_count),
+                duration_secs: self.number(&doc, self.duration_secs),
                 score: 0.0,
                 matched_message_index: 0,
                 snippet: self.text(&doc, self.preview).to_string(),
@@ -565,6 +584,10 @@ impl SessionIndex {
         doc.get_first(field).and_then(|v| v.as_str()).unwrap_or("")
     }
 
+    fn number(&self, doc: &TantivyDocument, field: Field) -> u64 {
+        doc.get_first(field).and_then(|v| v.as_u64()).unwrap_or(0)
+    }
+
     /// Session metadata from a stored record (messages are not loaded)
     fn session_from_doc(&self, doc: &TantivyDocument) -> Session {
         let timestamp_secs = doc
@@ -590,6 +613,15 @@ fn uses_query_syntax(query: &str) -> bool {
         || query
             .split_whitespace()
             .any(|word| word.len() > 1 && (word.starts_with('-') || word.starts_with('+')))
+}
+
+/// Seconds from the first message to the last
+fn session_duration_secs(session: &Session) -> u64 {
+    let times = session.messages.iter().map(|m| m.timestamp);
+    match (times.clone().min(), times.max()) {
+        (Some(first), Some(last)) => (last - first).num_seconds().max(0) as u64,
+        _ => 0,
+    }
 }
 
 /// The first user message (or first message), shortened, for the recent list
@@ -852,6 +884,19 @@ mod tests {
         let found = index.search("calend", 10, &SearchFilter::default()).unwrap();
         assert_eq!(ids(&found), vec!["a"]);
         assert_eq!(found[0].session.title.as_deref(), Some("Calendar sync K-7"));
+    }
+
+    #[test]
+    fn test_message_count_and_duration_are_stored() {
+        let mut long = session("a", "/p/x", 1, &["hello", "hi", "bye"]);
+        long.messages[2].timestamp = long.messages[0].timestamp + Duration::minutes(318);
+        let (_dir, index) = index_with(&[long]);
+
+        let recent = index.recent(10, &SearchFilter::default()).unwrap();
+        assert_eq!((recent[0].message_count, recent[0].duration_secs), (3, 318 * 60));
+
+        let found = index.search("bye", 10, &SearchFilter::default()).unwrap();
+        assert_eq!((found[0].message_count, found[0].duration_secs), (3, 318 * 60));
     }
 
     #[test]
