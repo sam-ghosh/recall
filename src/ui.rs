@@ -510,7 +510,15 @@ fn render_results_list(frame: &mut Frame, app: &mut App, area: Rect) {
                     ));
                 }
             }
-            let used: usize = header_spans.iter().map(|s| s.width()).sum();
+            let mut used: usize = header_spans.iter().map(|s| s.width()).sum();
+            // Too narrow: show the tool as its icon only
+            if used + 2 + right_width > available_width {
+                if let Some(tool) = header_spans.iter_mut().find(|s| s.style.fg == Some(source_color)) {
+                    let name_width = result.session.source.display_name().len() + 1;
+                    tool.content = result.session.source.icon().into();
+                    used -= name_width;
+                }
+            }
             let gap = available_width.saturating_sub(used + right_width).max(2);
             header_spans.push(Span::raw(" ".repeat(gap)));
             header_spans.push(Span::styled(right, Style::default().fg(t.dim_fg)));
